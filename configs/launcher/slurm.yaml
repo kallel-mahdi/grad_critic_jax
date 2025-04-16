@@ -1,0 +1,19 @@
+# Hydra configuration for SLURM launcher based on jobfile.sh
+
+slurm:
+  folder: "./slurm_logs/%j"  # Default log folder for submitit, %j is the job ID
+  nodes: 1                  # Default value, not specified in jobfile.sh
+  gpus_per_node: 1          # From --gres=gpu:a40:1
+  cpus_per_task: 16         # From --cpus-per-task=16
+  time: "3:00:00"           # From --time=3:00:00
+  account: null             # Placeholder - Set your SLURM account if needed
+  qos: null                 # Placeholder - Set your SLURM QOS if needed
+  partition: null           # Placeholder - Set your SLURM partition if needed
+
+# Default experiment configuration (can be overridden)
+experiment_group: "stoix_experiment" # Default name for the group of jobs
+
+experiment:
+  algorithm_exec_files: ["stoix/systems/ppo/anakin/ff_ppo.py"] # Example, replace with actual paths
+  environments: ["gymnax/CartPole-v1"]  # Example, replace with actual environments
+  seeds: [42, 123, 987]                # Example, replace with desired seeds 
