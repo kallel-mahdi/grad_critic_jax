@@ -11,7 +11,8 @@ import jax.flatten_util
 
 # Import base SAC components
 from sac import (
-    SACState as BaseSACState,
+    SACState,
+    SACAgent,
     SACConfig ,
     NormalTanhPolicy,
     DoubleCritic,
@@ -25,13 +26,18 @@ from sac import (
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
 
 
+@struct.dataclass
+class SACConfigGC(SACConfig):
+    gamma_critic_lr: float
+    target_gamma_critic_update_period: int
+
 
 @struct.dataclass
-class SACState(BaseSACState): # Inherit from base SACState
+class SACStateGC(SACState): # Rename to avoid clash, inherit from BaseSACState
     gamma_critic: train_state.TrainState  # Add gamma critic
     target_gamma_critic_params: Params  # Add target gamma critic params
     # Ensure config type hint is updated
-    config: SACConfig # Default to None, will be set in factory
+    config: SACConfigGC # Default to None, will be set in factory
 
 
 # --- Gamma Critic Network ---
@@ -83,7 +89,7 @@ class DoubleGammaCritic(nn.Module):
 
 # --- SAC Actor Update (with Gamma Correction) ---
 
-def update_actor(key_actor: PRNGKey, state: SACState, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
+def update_actor(key_actor: PRNGKey, state: SACStateGC, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
     # Get temperature value (scalar)
     temperature = state.temp.apply_fn({'params': state.temp.params})
 
@@ -157,15 +163,37 @@ def update_actor(key_actor: PRNGKey, state: SACState, batch: Batch) -> Tuple[tra
 
    
 
-    grads = _apply_gamma_correction((grads, state))
+    corrected_grads = _apply_gamma_correction((grads, state))
     
-    new_actor = state.actor.apply_gradients(grads=grads)
+    # --- Compute Gradient Similarity Metrics ---
+    flat_grads, _ = jax.flatten_util.ravel_pytree(grads)
+    flat_corrected_grads, _ = jax.flatten_util.ravel_pytree(corrected_grads)
+
+    norm_original = jnp.linalg.norm(flat_grads)
+    norm_corrected = jnp.linalg.norm(flat_corrected_grads)
+    dot_product = jnp.dot(flat_grads, flat_corrected_grads)
+
+    # Handle potential division by zero if norms are zero
+    cosine_similarity = jnp.where(
+        (norm_original > 1e-8) & (norm_corrected > 1e-8), # Add epsilon for numerical stability
+        dot_product / (norm_original * norm_corrected),
+        0.0 # Define similarity as 0 if either gradient is zero
+    )
+    cosine_distance = 1.0 - cosine_similarity
+
+    info['original_grad_norm'] = norm_original
+    info['corrected_grad_norm'] = norm_corrected
+    info['grad_cosine_similarity'] = cosine_similarity
+    info['grad_cosine_distance'] = cosine_distance
+    # --- End Gradient Similarity Metrics ---
+
+    new_actor = state.actor.apply_gradients(grads=corrected_grads)
 
     return new_actor, info
 
 
 # Add Gamma Critic Update
-def update_gamma_critic(key_gamma: PRNGKey, state: SACState, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
+def update_gamma_critic(key_gamma: PRNGKey, state: SACStateGC, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
     """Updates the gamma critic network using per-sample actor gradients."""
     
     # 1. Get next state actions from the policy
@@ -250,67 +278,69 @@ def update_gamma_critic(key_gamma: PRNGKey, state: SACState, batch: Batch) -> Tu
     return new_gamma_critic, info
 
 
-# --- SAC Learner (with Gamma Critic) ---
+# --- SAC Update Steps (External JIT functions) ---
 
 @jax.jit
-def _update_step(
-    state: SACState,
-    batch: Batch
-) -> Tuple[SACState, InfoDict]:
-    """Single update step for all components (including Gamma Critic)."""
+def _sac_gc_update_step(state: SACStateGC, batch: Batch) -> Tuple[SACStateGC, InfoDict]:
+    """Single update step for GC-SAC (external JIT)."""
     rng, key_critic, key_actor, key_gamma = jax.random.split(state.rng, 4)
 
     # Update critic (using base update function)
+    # Note: base_update_critic expects the base SACState structure within the GC state
     new_critic, critic_info = base_update_critic(key_critic, state, batch)
 
     # Conditionally update target critic parameters
-    def _update_target(state_and_new_critic):
+    def _update_target_critic(state_and_new_critic):
         state, new_critic = state_and_new_critic
         return target_update(new_critic.params, state.target_critic_params, state.config.tau)
 
-    def _no_update_target(state_and_new_critic):
+    def _no_update_target_critic(state_and_new_critic):
         state, _ = state_and_new_critic
         return state.target_critic_params
 
     new_target_critic_params = jax.lax.cond(
         state.step % state.config.target_update_period == 0,
-        _update_target,
-        _no_update_target,
+        _update_target_critic,
+        _no_update_target_critic,
         (state, new_critic)
     )
 
-    # Update gamma critic and target params only if gamma correction is enabled
-    def _update_gamma(current_state): # Pass the current state
-        new_gamma_critic_state, gamma_info = update_gamma_critic(key_gamma, current_state, batch)
-        new_target_gamma_params = target_update(
-            new_gamma_critic_state.params,
-            current_state.target_gamma_critic_params, # Use current state's target params
-            current_state.config.tau
-        )
-        return new_gamma_critic_state, new_target_gamma_params, gamma_info
-   
-    
+    # Update gamma critic
     # Create a temporary state with updated critic for gamma update
     temp_state_for_gamma = state.replace(critic=new_critic)
+    new_gamma_critic, gamma_info = update_gamma_critic(key_gamma, temp_state_for_gamma, batch)
 
-    new_gamma_critic, new_target_gamma_params, gamma_info = _update_gamma(temp_state_for_gamma)  # Pass the temporary state here
+    # Conditionally update target gamma critic parameters
+    def _update_target_gamma(state_and_new_gamma):
+        state, new_gamma = state_and_new_gamma
+        return target_update(new_gamma.params, state.target_gamma_critic_params, state.config.tau)
 
-    
+    def _no_update_target_gamma(state_and_new_gamma):
+        state, _ = state_and_new_gamma
+        return state.target_gamma_critic_params
+
+    # Target update happens based on the *new* gamma critic state but *old* target params
+    new_target_gamma_params = jax.lax.cond(
+        state.step % state.config.target_update_period == 0,
+        _update_target_gamma,
+        _no_update_target_gamma,
+        (state, new_gamma_critic) # Pass state for config.tau and old target, new_gamma for new params
+    )
+
+    # Update actor (with gamma correction)
     # Create a temporary state with updated critic and gamma critic for actor update
     temp_state_for_actor = state.replace(
         critic=new_critic,
         gamma_critic=new_gamma_critic
     )
-
-    # Update actor (with gamma correction if enabled)
-    new_actor, actor_info = update_actor(key_actor, 
-                                        temp_state_for_actor, 
-                                        batch)
+    new_actor, actor_info = update_actor(key_actor, temp_state_for_actor, batch)
 
     # Update temperature
-    new_temp, alpha_info = update_temperature(state, actor_info['entropy'])
+    # Temperature update depends on actor's entropy, use state containing new actor
+    temp_state_for_temp = temp_state_for_actor.replace(actor=new_actor)
+    new_temp, alpha_info = update_temperature(temp_state_for_temp, actor_info['entropy'])
 
-    # Create new state with updated values
+    # Create final new state with updated values
     new_state = state.replace(
         actor=new_actor,
         critic=new_critic,
@@ -322,17 +352,23 @@ def _update_step(
         step=state.step + 1
     )
 
-    return new_state, {**critic_info, **actor_info, **alpha_info, **gamma_info}
+    # Combine all info dicts, handling potential key collisions if necessary
+    # (Assuming no collisions for now)
+    all_info = {**critic_info, **gamma_info, **actor_info, **alpha_info}
+    return new_state, all_info
 
 
-def create_sac_learner(
+
+
+# --- SAC Learner (with Gamma Critic) ---
+
+def create_sac_gc_learner(
     seed: int,
     observations: jnp.ndarray,  # Sample observation for initialization
     actions: jnp.ndarray,       # Sample action for initialization
-    config: Optional[SACConfig],
-    init_mean: Optional[jnp.ndarray] = None,
+    config: SACConfig, # Keep using SACConfig
     policy_final_fc_init_scale: float = 1.0
-) -> SACState:
+) -> SACStateGC:
     """Factory function to create SAC state with gamma critic."""
     
     action_dim = actions.shape[-1]
@@ -345,7 +381,6 @@ def create_sac_learner(
     actor_def = NormalTanhPolicy(
         config.hidden_dims,
         action_dim,
-        init_mean=init_mean,
         final_fc_init_scale=policy_final_fc_init_scale)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
@@ -386,7 +421,7 @@ def create_sac_learner(
     )
     
     # Create the SAC state with gamma critic
-    return SACState(
+    return SACStateGC(
         actor=actor,
         critic=critic,
         target_critic_params=critic_params,
@@ -398,3 +433,38 @@ def create_sac_learner(
         config=config # Pass the full config object
     )
 
+
+# --- SAC Agent Class (with Gamma Critic) ---
+
+@struct.dataclass
+class SACAgentGC(SACAgent):
+    state: SACStateGC
+    StateType: Any = SACStateGC # Explicitly set state type
+
+    @classmethod
+    def create(
+        cls,
+        seed: int,
+        observations: jnp.ndarray,
+        actions: jnp.ndarray,
+        agent_config: Dict,
+        **kwargs # Accept potential extra kwargs from base class, though SAC doesn't use them now
+    ) -> "SACAgent":
+        """Creates the SACAgent with its initial state."""
+        # Use the existing factory function to create the underlying state
+        
+        agent_config["target_entropy"] = -actions.shape[-1] * agent_config["target_entropy_multiplier"]
+        initial_state = create_sac_gc_learner(
+            seed=seed,
+            observations=observations,
+            actions=actions,
+            config=SACConfigGC(**agent_config),
+        )
+        return cls(state=initial_state)
+    
+    def update(self, batch: Batch) -> Tuple["SACAgentGC", InfoDict]:
+        """Performs a single GC-SAC training step."""
+        new_state, info = _sac_gc_update_step(self.state, batch)
+        return SACAgentGC(state=new_state), info
+
+    

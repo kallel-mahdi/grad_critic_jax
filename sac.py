@@ -13,9 +13,11 @@ import distrax
 
 # Import common components from utils
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+# Import base agent class
+from base_agent import RLAgent, RLAgentState,RLAgentConfig # Added import
 
 @struct.dataclass
-class SACConfig:
+class SACConfig(RLAgentConfig):
     actor_lr: float
     critic_lr: float
     temp_lr: float
@@ -26,9 +28,13 @@ class SACConfig:
     target_entropy: Optional[float]
     backup_entropy: bool
     init_temperature: float
+    policy_log_std_min: Optional[float] 
+    policy_log_std_max: Optional[float] 
+    policy_final_fc_init_scale: float 
+    target_entropy_multiplier: Optional[float]
 
 @struct.dataclass
-class SACState:
+class SACState(RLAgentState): # Inherit from RLAgentState
     rng: PRNGKey
     step: int
     actor: train_state.TrainState
@@ -46,13 +52,12 @@ class SACState:
 class NormalTanhPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    state_dependent_std: bool = True
     dropout_rate: Optional[float] = None
+    log_std_min: Optional[float] = -10.0  # Common default minimum log std
+    log_std_max: Optional[float] = 2.0    # Common default maximum log std
     final_fc_init_scale: float = 1.0
-    log_std_min: Optional[float] = None
-    log_std_max: Optional[float] = None
     tanh_squash_distribution: bool = True
-    init_mean: Optional[jnp.ndarray] = None
+    
 
     @nn.compact
     def __call__(self,
@@ -73,7 +78,7 @@ class NormalTanhPolicy(nn.Module):
                                 self.final_fc_init_scale))(outputs)
 
 
-        log_stds = jnp.clip(log_stds, -10.0, 2.0)
+        log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         # TFP uses scale_diag for MultivariateNormalDiag
         base_dist = distrax.MultivariateNormalDiag(loc=means,
@@ -234,14 +239,11 @@ def update_critic(key_critic: PRNGKey, state: SACState, batch: Batch) -> Tuple[t
 
 
 
-# --- SAC Learner ---
+# --- SAC Update Steps (External JIT functions) ---
 
 @jax.jit
-def _update_step(
-    state: SACState,
-    batch: Batch
-) -> Tuple[SACState, InfoDict]:
-    """Single update step for all components."""
+def _sac_update_step(state: SACState, batch: Batch) -> Tuple[SACState, InfoDict]:
+    """Single update step for all components (external JIT)."""
     rng, key_critic, key_actor = jax.random.split(state.rng, 3)
 
     # Update critic
@@ -263,11 +265,13 @@ def _update_step(
         (state, new_critic)
     )
 
-    # Update actor
-    new_actor, actor_info = update_actor(key_actor, state.replace(critic=new_critic), batch)
+    # Update actor using potentially updated critic
+    temp_state_for_actor = state.replace(critic=new_critic)
+    new_actor, actor_info = update_actor(key_actor, temp_state_for_actor, batch)
 
-    # Update temperature
-    new_temp, alpha_info = update_temperature(state, actor_info['entropy'])
+    # Update temperature using potentially updated actor
+    temp_state_for_temp = temp_state_for_actor.replace(actor=new_actor)
+    new_temp, alpha_info = update_temperature(temp_state_for_temp, actor_info['entropy'])
 
     # Create new state with updated values
     new_state = state.replace(
@@ -282,13 +286,38 @@ def _update_step(
     return new_state, {**critic_info, **actor_info, **alpha_info}
 
 
+@jax.jit
+def _sac_sample_step(state: SACState, observation: jnp.ndarray) -> Tuple[SACState, jnp.ndarray]:
+    """Samples an action using the policy and updates RNG state (external JIT)."""
+    rng, key = jax.random.split(state.rng)
+    dist = state.actor.apply_fn({'params': state.actor.params}, observation)
+    action = dist.sample(seed=key)
+    new_state = state.replace(rng=rng)
+    return new_state, action
+
+@jax.jit
+def _sac_sample_eval_step(state: SACState, observation: jnp.ndarray) -> jnp.ndarray:
+    """Samples a deterministic action for evaluation (external JIT)."""
+    dist = state.actor.apply_fn({'params': state.actor.params}, observation)
+    if isinstance(dist, distrax.Transformed):
+        # Use the mode of the original distribution
+        action = dist.distribution.mode()
+    else:
+        # For non-transformed distributions, use mode directly
+        action = dist.mode()
+    return action
+
+
+# --- SAC Learner ---
+
+# Removed the old _update_step function as it's replaced by _sac_update_step
+
+# --- Factory Function ---
 def create_sac_learner(
     seed: int,
     observations: jnp.ndarray,  # Sample observation for initialization
     actions: jnp.ndarray,       # Sample action for initialization
     config: Optional[SACConfig] = None,
-    init_mean: Optional[jnp.ndarray] = None,
-    policy_final_fc_init_scale: float = 1.0
 ) -> SACState:
     """Factory function to create SAC state."""
     
@@ -303,8 +332,7 @@ def create_sac_learner(
     actor_def = NormalTanhPolicy(
         config.hidden_dims,
         action_dim,
-        init_mean=init_mean,
-        final_fc_init_scale=policy_final_fc_init_scale)
+        final_fc_init_scale=config.policy_final_fc_init_scale)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,
@@ -340,6 +368,52 @@ def create_sac_learner(
         step=0,
         config=config
     )
+
+# --- SAC Agent Class ---
+
+@struct.dataclass
+class SACAgent(RLAgent):
+    state: SACState
+
+    @classmethod
+    def create(
+        cls,
+        seed: int,
+        observations: jnp.ndarray,
+        actions: jnp.ndarray,
+        agent_config: Dict,
+        **kwargs # Accept potential extra kwargs from base class, though SAC doesn't use them now
+    ) -> "SACAgent":
+        """Creates the SACAgent with its initial state."""
+        # Use the existing factory function to create the underlying state
+        
+        agent_config["target_entropy"] = -actions.shape[-1] * agent_config["target_entropy_multiplier"]
+        initial_state = create_sac_learner(
+            seed=seed,
+            observations=observations,
+            actions=actions,
+            config=SACConfig(**agent_config),
+        )
+        return cls(state=initial_state)
+
+    def update(self, batch: Batch) -> Tuple["SACAgent", InfoDict]:
+        """Performs a single SAC training step using the external JIT function."""
+        new_state, info = _sac_update_step(self.state, batch)
+        # Return a new agent instance wrapping the new state
+        return SACAgent(state=new_state), info
+
+    def sample(self, observation: jnp.ndarray) -> Tuple["SACAgent", jnp.ndarray]:
+        """Samples an action stochastically using the external JIT function."""
+        new_state, action = _sac_sample_step(self.state, observation)
+        # Return a new agent instance wrapping the new state (with updated RNG)
+        return SACAgent(state=new_state), action
+
+    def sample_eval(self, observation: jnp.ndarray) -> Tuple["SACAgent", jnp.ndarray]:
+        """Samples an action deterministically using the external JIT function."""
+        action = _sac_sample_eval_step(self.state, observation)
+        # Evaluation sampling doesn't change the agent's state (no RNG update)
+        # Return self and the action
+        return self, action
 
 
 

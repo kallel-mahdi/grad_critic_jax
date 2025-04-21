@@ -1,0 +1,14 @@
+
+agent_name: TD3GC
+actor_lr: 3e-4
+critic_lr: 3e-4
+hidden_dims: [256, 256] # Example hidden layer dimensions
+discount: 0.99
+tau: 0.005
+policy_noise: 0.2       # TD3 specific: Noise added to target policy actions
+noise_clip: 0.5         # TD3 specific: Limit for target policy noise
+policy_frequency: 2    # TD3 specific: Frequency of delayed policy updates
+exploration_noise: 0.1  # TD3 specific: Stddev for Gaussian exploration noise added to actions
+max_action: 1.0
+gamma_critic_lr: 3e-4
+target_gamma_critic_update_period: 1

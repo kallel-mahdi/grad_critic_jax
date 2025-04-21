@@ -1,10 +1,15 @@
 # Main configuration file
-
-
 defaults:
-  - env: mujoco/Ant-v4
+  - environment: mujoco/Ant-v4 # Specify the default env file directly here
+  - algorithm: sac
   - _self_
 
+# Environment settings (define default values here)
+# environment:
+#   # Add any other default environment parameters that should apply
+#   # if the selected env file (e.g., Ant-v4.yaml) doesn't define them.
+#   # Example:
+#   # render_mode: null
 
 # Training settings
 training:
@@ -14,21 +19,6 @@ training:
   batch_size: 256
   replay_buffer_capacity: 1_000_000
   eval_episodes: 10
-
-# Algorithm settings
-algorithm:
-  actor_lr: 3e-4
-  critic_lr: 3e-4
-  temp_lr: 3e-4
-  gamma_lr: 3e-4
-  hidden_dims: [256, 256]
-  discount: 0.99
-  tau: 0.005
-  target_update_period: 1
-  backup_entropy: True
-  init_temperature: 1.0
-  target_entropy_multiplier: 1.0
-  gamma_correction: True
 
 # Logging settings
 logging:

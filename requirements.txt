@@ -1,0 +1,12 @@
+gymnasium[mujoco]
+submitit
+numpy
+tqdm
+hydra-core
+omegaconf
+wandb
+jax
+jaxlib
+flax
+optax 
+distrax

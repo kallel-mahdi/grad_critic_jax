@@ -1,0 +1,28 @@
+# Hydra configuration for SLURM launcher based on jobfile.sh
+
+slurm:
+  folder: "./slurm_logs/%j"  # Default log folder for submitit, %j is the job ID
+  nodes: 1
+  gpus_per_node: 1    
+  gres: null      # From --gres=gpu:1
+  cpus_per_task: 8          # From -c 8
+  time: "04:00:00"          # From --time=04:00:00
+  mem_gb: 8                 # From --mem=8G
+  tmpfs: "5G"               # From --tmp=5G
+  account: null             # Placeholder - Set your SLURM account if needed
+  qos: null   
+  partition: standard       # From -p standard
+  export: null            # Maps to #SBATCH --export=NONE
+  setup_commands:
+    - "unset SLURM_EXPORT_ENV"
+    - "export WANDB_API_KEY=28996bd59f1ba2c5a8c3f2cc23d8673c327ae230" # Consider safer ways to handle API keys
+    - "module load python/3.12-conda cuda cudnn"
+
+# Default experiment configuration (can be overridden)
+experiment_group: "StandardJob" # From -J StandardJob
+
+experiment:
+  algorithm_exec_files: ["main.py"] # Example, replace with actual paths
+  environments: ["mujoco/Ant-v4", "mujoco/Hopper-v4", "mujoco/Walker2d-v4"] # Example, replace with actual environments
+  seeds: [42, 123, 987, 55254, 653454] # Example, replace with desired seeds
+  algorithm: ["sac", "sacgc", "td3", "td3gc"]

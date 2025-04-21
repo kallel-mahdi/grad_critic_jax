@@ -123,9 +123,8 @@ def sample_actions(state: struct.dataclass, observations: jnp.ndarray,
 
 
 
-
 # --- Evaluation Function ---
-def evaluate(state: struct.dataclass, env: gym.Env, num_episodes: int) -> Tuple[struct.dataclass, float]:
+def evaluate(agent: struct.dataclass, env: gym.Env, num_episodes: int) -> Tuple[struct.dataclass, float]:
     """Evaluates the agent's performance in the environment."""
     total_reward = 0.0
     
@@ -135,12 +134,12 @@ def evaluate(state: struct.dataclass, env: gym.Env, num_episodes: int) -> Tuple[
         episode_reward = 0.0
         
         while not done:
-            # Use deterministic actions for evaluation
-            state, action = sample_actions(state, observation, deterministic=True)
+            # Use agent's sample_eval method for deterministic evaluation actions
+            agent, action = agent.sample_eval(observation)
             observation, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             episode_reward += reward
             
         total_reward += episode_reward
         
-    return state, total_reward / num_episodes
+    return agent, total_reward / num_episodes
