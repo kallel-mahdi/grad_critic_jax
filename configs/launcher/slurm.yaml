@@ -10,7 +10,7 @@ slurm:
   account: null             # Placeholder - Set your SLURM account if needed
   qos: null                 # Placeholder - Set your SLURM QOS if needed
   partition: null       # Removed - Not specified in script
-  export: NONE            # Maps to #SBATCH --export=NONE
+  export: "ALL"            # Maps to #SBATCH --export=NONE
   setup_commands:
     - "module load python/3.12-conda cuda cudnn" # Move to top
     #- "unset SLURM_EXPORT_ENV"
@@ -18,12 +18,13 @@ slurm:
     - "export WANDB_API_KEY=28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
     - "export WANDB__SERVICE_WAIT=\"300\""
     - "export WANDB_INIT_TIMEOUT=\"600\""
+    - "printenv > before_python_env.txt"
 
 # Default experiment configuration (can be overridden)
 experiment_group: "StandardJob" # From -J StandardJob
 
 experiment:
   algorithm_exec_files: ["main.py"] # Example, replace with actual paths
-  environments: ["mujoco/Ant-v4"] # Example, replace with actual environments
-  seeds: [42] # Example, replace with desired seeds
-  algorithm: ["sac"]
+  environments: ["mujoco/Ant-v4","mujoco/Hopper-v4","mujoco/Walker2d-v4","mujoco/Humanoid-v4"] # Example, replace with actual environments
+  seeds: [1,2,3,4,5] # Example, replace with desired seeds
+  algorithm: ["sac","td3","td3gc","sacgc"]

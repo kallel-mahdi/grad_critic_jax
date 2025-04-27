@@ -6,7 +6,7 @@ slurm:
   gpus_per_node: 1    
   gres: null      # From --gres=gpu:1
   cpus_per_task: 8          # From -c 8
-  time: "04:00:00"          # From --time=04:00:00
+  time: "08:00:00"          # From --time=04:00:00
   mem_gb: 8                 # From --mem=8G
   tmpfs: "5G"               # From --tmp=5G
   account: null             # Placeholder - Set your SLURM account if needed
@@ -23,6 +23,6 @@ experiment_group: "StandardJob" # From -J StandardJob
 
 experiment:
   algorithm_exec_files: ["main.py"] # Example, replace with actual paths
-  environments: ["mujoco/Ant-v4", "mujoco/Hopper-v4", "mujoco/Walker2d-v4"] # Example, replace with actual environments
-  seeds: [42, 123, 987, 55254, 653454] # Example, replace with desired seeds
-  algorithm: ["sac", "sacgc", "td3", "td3gc"]
+  environments: ["mujoco/Ant-v4", "mujoco/Hopper-v4", "mujoco/Walker2d-v4", "mujoco/Humanoid-v4"] # Example, replace with actual environments
+  seeds: [1,2,3,4,5] # Example, replace with desired seeds
+  algorithm: ["td3gc","sacgc"]

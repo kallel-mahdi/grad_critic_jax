@@ -23,7 +23,7 @@ training:
 # Logging settings
 logging:
   use_wandb: True
-  wandb_project: "sac_jax_hydra"
+  wandb_project: "sac_jax_hydra_julia2"
   wandb_entity: null
 
 # Seed

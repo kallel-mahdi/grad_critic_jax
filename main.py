@@ -11,8 +11,12 @@ from td3_gc import TD3AgentGC
 from utils import ReplayBuffer, evaluate
 import wandb
 
-# Set Weights & Biases API key
+
 os.environ["WANDB_API_KEY"] = "28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
+os.environ["HTTPS_PROXY"] = "http://proxy:80"
+os.environ["WANDB__SERVICE_WAIT"] = "300"
+os.environ["WANDB_INIT_TIMEOUT"] = "600"
+
 
 # --- Print environment variables for debugging ---
 print("--- W&B Environment Variables ---")

@@ -56,7 +56,7 @@ def filter_none_values(d: dict) -> dict:
     return {key: value for key, value in d.items() if value is not None}
 
 
-@hydra.main(version_base="1.2", config_path="./configs/launcher", config_name="slurm")
+@hydra.main(version_base="1.2", config_path="./configs/launcher", config_name="slurm_julia2")
 def main(cfg: DictConfig) -> None:
     """
     Main entry point for launching multiple Stoix experiments on SLURM-based cluster.
@@ -78,7 +78,6 @@ def main(cfg: DictConfig) -> None:
         "slurm_partition": cfg.slurm.partition,
         "slurm_account": cfg.slurm.account,
         "slurm_qos": cfg.slurm.qos,
-        "slurm_export": cfg.slurm.export,
 
     }
     # Filter out any None values the user might leave in the config
@@ -86,8 +85,7 @@ def main(cfg: DictConfig) -> None:
 
     # Build dictionary for slurm_additional_parameters
     slurm_params_additional = {
-        "tmp": cfg.slurm.get("tmpfs"),      # Map tmpfs to --tmp
-        # "export": cfg.slurm.get("export_env"), # Map export_env to --export <-- REMOVED
+        "export": cfg.slurm.export,  # Direct mapping without .get()
         # Add any other SBATCH directives here that don't have direct submitit args
     }
     slurm_params_additional = filter_none_values(slurm_params_additional)
@@ -103,24 +101,44 @@ def main(cfg: DictConfig) -> None:
 
     # Prepare the Cartesian product of algorithm_execs, environments, seeds, algorithms.
     jobs = []
-    with executor.batch():
-        # Ensure algorithm is iterable (Hydra might pass a single string if only one)
-        alg_names = cfg.experiment.algorithm
-        if isinstance(alg_names, str):
-             alg_names = [alg_names]
 
-        for algorithm_exec, environment, seed, alg_name in itertools.product(
-            cfg.experiment.algorithm_exec_files,
-            cfg.experiment.environments,
-            cfg.experiment.seeds,
-            alg_names
-        ):
-            print(f"Submitting job for {alg_name} ({algorithm_exec}) on {environment} with seed {seed}.")
-            # Pass arguments to the run_experiment function, which submitit will execute
-            job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name)
-            jobs.append(job)
+    # Option A: group into one SLURM array job, but print out each task's job_id
+    # with executor.batch():
+    #     alg_names = cfg.experiment.algorithm
+    #     if isinstance(alg_names, str):
+    #         alg_names = [alg_names]
 
-    print(f"Launched {len(jobs)} jobs.")
+    #     for algorithm_exec, environment, seed, alg_name in itertools.product(
+    #         cfg.experiment.algorithm_exec_files,
+    #         cfg.experiment.environments,
+    #         cfg.experiment.seeds,
+    #         alg_names
+    #     ):
+    #         print(f"Submitting task for {alg_name} ({algorithm_exec}) on {environment} seed={seed}")
+    #         job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name)
+    #         # this is the SLURM array job ID
+    #         print(f" -> SLURM Job ID / Array ID: {job.job_id}")
+    #         jobs.append(job)
+
+    # Option B: uncomment this block if you would rather fire off *separate* sbatch jobs
+    # and see each one in squeue individually
+    # ---------------------------------------------------------------------------
+    for algorithm_exec, environment, seed, alg_name in itertools.product(
+        cfg.experiment.algorithm_exec_files,
+        cfg.experiment.environments,
+        cfg.experiment.seeds,
+        cfg.experiment.algorithm
+    ):
+        print(f"Submitting independent job for {alg_name} on {environment} seed={seed}")
+        job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name)
+        print(f" -> SLURM Job ID: {job.job_id}")
+        jobs.append(job)
+    # ---------------------------------------------------------------------------
+
+    print(f"Launched {len(jobs)} tasks.")
+    print("All SLURM job IDs:")
+    for job in jobs:
+        print(f" - {job.job_id}")
 
 
 if __name__ == "__main__":
