@@ -13,6 +13,8 @@ import distrax # Though not strictly needed for TD3 policy, keep for potential f
 # Import common components from utils and base_agent
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
 from base_agent import RLAgent, RLAgentState, RLAgentConfig
+# Import networks
+from networks import  DoubleCritic, DeterministicActor
 
 @struct.dataclass
 class TD3Config(RLAgentConfig):
@@ -38,51 +40,6 @@ class TD3State(RLAgentState): # Inherit from RLAgentState
     target_critic_params: Params
     config: TD3Config
 
-
-# --- Actor Network ---
-class Actor(nn.Module):
-    action_dim: int
-    max_action: float # Needed for TD3's action output clipping/scaling if not handled by scale/bias
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(self.action_dim)(x)
-        x = nn.tanh(x) * self.max_action # Scale output to action range
-        return x
-
-# --- Critic Network (Reusing SAC's DoubleCritic Structure) ---
-class Critic(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray,
-                 actions: jnp.ndarray) -> jnp.ndarray:
-        inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1),
-                     activations=self.activations)(inputs)
-        return jnp.squeeze(critic, -1)
-
-class DoubleCritic(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-    num_qs: int = 2
-
-    @nn.compact
-    def __call__(self, states, actions):
-        VmapCritic = nn.vmap(Critic,
-                             variable_axes={'params': 0},
-                             split_rngs={'params': True},
-                             in_axes=None,
-                             out_axes=0,
-                             axis_size=self.num_qs)
-        qs = VmapCritic(self.hidden_dims,
-                        activations=self.activations)(states, actions)
-        return qs[0], qs[1] # Return the two Q-values separately
 
 
 # --- TD3 Critic Update ---
@@ -240,7 +197,9 @@ def create_td3_learner(
     action_dim = actions.shape[-1]
 
     # Initialize Actor network and state
-    actor_def = Actor(action_dim=action_dim, max_action=config.max_action)
+    actor_def = DeterministicActor(action_dim=action_dim, max_action=config.max_action,
+                                   hidden_dims=config.hidden_dims,
+                                   final_fc_init_scale=config.final_fc_init_scale)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,

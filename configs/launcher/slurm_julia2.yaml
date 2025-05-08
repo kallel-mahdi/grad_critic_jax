@@ -26,3 +26,5 @@ experiment:
   environments: ["mujoco/Ant-v4", "mujoco/Hopper-v4", "mujoco/Walker2d-v4", "mujoco/Humanoid-v4"] # Example, replace with actual environments
   seeds: [1,2,3,4,5] # Example, replace with desired seeds
   algorithm: ["td3gc","sacgc"]
+  update_frequency: [1, 5, 10]
+  wandb_project: ["SAC_GC_DIFFERENT_UTD"]

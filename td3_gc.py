@@ -11,18 +11,17 @@ import optax
 from jax.tree_util import tree_map
 import jax.flatten_util # Added for gradient flattening/unflattening
 
+# Import networks
+from networks import  DoubleCritic, DeterministicActor
+
 # Import base TD3 components
 from td3 import (
     TD3State,
     TD3Agent,
     TD3Config,
-    Actor, # Reuse TD3 Actor
-    Critic, # Reuse TD3 Critic
-    DoubleCritic, # Reuse TD3 DoubleCritic
     update_critic as base_update_critic, # Use base critic update
     target_update, # Reuse target update function
-    _td3_sample_step, # Reuse sampling
-    _td3_sample_eval_step # Reuse eval sampling
+
 )
 
 # Import common components from utils and base_agent
@@ -370,7 +369,9 @@ def create_td3_gc_learner(
     action_dim = actions.shape[-1]
 
     # Initialize Actor network and state (same as TD3)
-    actor_def = Actor(action_dim=action_dim, max_action=config.max_action)
+    actor_def = DeterministicActor(action_dim=action_dim, max_action=config.max_action,
+                                   hidden_dims=config.hidden_dims,
+                                   final_fc_init_scale=config.final_fc_init_scale)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,

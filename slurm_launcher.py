@@ -8,7 +8,7 @@ import submitit
 from omegaconf import DictConfig
 
 
-def run_experiment(algorithm_exec_file: str, environment: str, seed: int, algorithm: str) -> None:
+def run_experiment(algorithm_exec_file: str, environment: str, seed: int, algorithm: str, update_frequency: int, wandb_project: str) -> None:
     """
     Runs a single experiment via a subprocess run, passing the full inherited environment.
 
@@ -18,12 +18,12 @@ def run_experiment(algorithm_exec_file: str, environment: str, seed: int, algori
         seed: Random seed for reproducibility
         algorithm: Name of the algorithm (e.g., 'SAC', 'TD3GC')
     """
-    print(f"--- Starting experiment: {algorithm} on {environment} with seed {seed} ({algorithm_exec_file}) ---")
+    print(f"--- Starting experiment: {algorithm} on {environment} with seed {seed} update_frequency={update_frequency} wandb_project={wandb_project} ({algorithm_exec_file}) ---")
     print(f"Launcher CWD: {os.getcwd()}")
 
     # Assuming python is in .venv/bin relative to the job's working directory
-    python_executable = ".venv/bin/python"
-    cmd = f"{python_executable} {algorithm_exec_file} environment={environment} seed={seed} algorithm={algorithm}"
+    cmd = f".venv/bin/python {algorithm_exec_file} environment={environment} seed={seed} algorithm={algorithm} \
+                            training.update_frequency={update_frequency} logging.wandb_project={wandb_project}"
     print(f"Executing command: {cmd}")
 
     # Pass a copy of the current environment to the subprocess.
@@ -99,38 +99,19 @@ def main(cfg: DictConfig) -> None:
         **slurm_params_direct # Pass direct parameters like time, mem_gb, etc.
     )
 
-    # Prepare the Cartesian product of algorithm_execs, environments, seeds, algorithms.
-    jobs = []
-
-    # Option A: group into one SLURM array job, but print out each task's job_id
-    # with executor.batch():
-    #     alg_names = cfg.experiment.algorithm
-    #     if isinstance(alg_names, str):
-    #         alg_names = [alg_names]
-
-    #     for algorithm_exec, environment, seed, alg_name in itertools.product(
-    #         cfg.experiment.algorithm_exec_files,
-    #         cfg.experiment.environments,
-    #         cfg.experiment.seeds,
-    #         alg_names
-    #     ):
-    #         print(f"Submitting task for {alg_name} ({algorithm_exec}) on {environment} seed={seed}")
-    #         job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name)
-    #         # this is the SLURM array job ID
-    #         print(f" -> SLURM Job ID / Array ID: {job.job_id}")
-    #         jobs.append(job)
-
-    # Option B: uncomment this block if you would rather fire off *separate* sbatch jobs
-    # and see each one in squeue individually
     # ---------------------------------------------------------------------------
-    for algorithm_exec, environment, seed, alg_name in itertools.product(
+    jobs = []
+    # Prepare the Cartesian product of algorithm_execs, environments, seeds, algorithms.
+    for algorithm_exec, environment, seed, alg_name, update_frequency, wandb_project in itertools.product(
         cfg.experiment.algorithm_exec_files,
         cfg.experiment.environments,
         cfg.experiment.seeds,
-        cfg.experiment.algorithm
+        cfg.experiment.algorithm,
+        cfg.experiment.update_frequency,
+        cfg.experiment.wandb_project
     ):
         print(f"Submitting independent job for {alg_name} on {environment} seed={seed}")
-        job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name)
+        job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name, update_frequency, wandb_project)
         print(f" -> SLURM Job ID: {job.job_id}")
         jobs.append(job)
     # ---------------------------------------------------------------------------

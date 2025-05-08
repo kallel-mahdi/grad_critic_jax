@@ -12,9 +12,11 @@ from jax.tree_util import tree_map
 import distrax
 
 # Import common components from utils
-from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+from utils import Batch , PRNGKey, Params, InfoDict
 # Import base agent class
 from base_agent import RLAgent, RLAgentState,RLAgentConfig # Added import
+# Import networks
+from networks import  DoubleCritic, StochasticActor, Temperature
 
 @struct.dataclass
 class SACConfig(RLAgentConfig):
@@ -25,13 +27,14 @@ class SACConfig(RLAgentConfig):
     discount: float
     tau: float
     target_update_period: int
-    target_entropy: Optional[float]
+    target_entropy: float
     backup_entropy: bool
     init_temperature: float
-    policy_log_std_min: Optional[float] 
-    policy_log_std_max: Optional[float] 
+    policy_log_std_min: float 
+    policy_log_std_max: float 
     policy_final_fc_init_scale: float 
-    target_entropy_multiplier: Optional[float]
+    target_entropy_multiplier: float
+    max_action: float
 
 @struct.dataclass
 class SACState(RLAgentState): # Inherit from RLAgentState
@@ -46,100 +49,6 @@ class SACState(RLAgentState): # Inherit from RLAgentState
 
 
 
-# --- Policy Network ---
-
-
-class NormalTanhPolicy(nn.Module):
-    hidden_dims: Sequence[int]
-    action_dim: int
-    dropout_rate: Optional[float] = None
-    log_std_min: Optional[float] = -10.0  # Common default minimum log std
-    log_std_max: Optional[float] = 2.0    # Common default maximum log std
-    final_fc_init_scale: float = 1.0
-    tanh_squash_distribution: bool = True
-    
-
-    @nn.compact
-    def __call__(self,
-                 observations: jnp.ndarray,
-                 training: bool = False):
-        outputs = MLP(self.hidden_dims,
-                      activate_final=True,
-                      dropout_rate=self.dropout_rate)(observations,
-                                                      training=training)
-
-        means = nn.Dense(self.action_dim,
-                         kernel_init=default_init(
-                             self.final_fc_init_scale))(outputs)
-     
-    
-        log_stds = nn.Dense(self.action_dim,
-                            kernel_init=default_init(
-                                self.final_fc_init_scale))(outputs)
-
-
-        log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
-
-        # TFP uses scale_diag for MultivariateNormalDiag
-        base_dist = distrax.MultivariateNormalDiag(loc=means,
-                                               scale_diag=jnp.exp(log_stds))
-
-        if self.tanh_squash_distribution:
-           
-            return distrax.Transformed(
-            base_dist, distrax.Block(distrax.Tanh(), ndims=1))
-        else:
-            # Returns the raw Normal distribution without tanh squashing.
-            return base_dist
-
-
-
-# --- Critic Network ---
-
-class Critic(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray,
-                 actions: jnp.ndarray) -> jnp.ndarray:
-        inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1),
-                     activations=self.activations)(inputs)
-        return jnp.squeeze(critic, -1)
-
-class DoubleCritic(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-    num_qs: int = 2
-
-    @nn.compact
-    def __call__(self, states, actions):
-        # Creates two Critic networks and runs them in parallel.
-        VmapCritic = nn.vmap(Critic,
-                             variable_axes={'params': 0}, # Map over parameters for each critic
-                             split_rngs={'params': True}, # Use different RNGs for parameter initialization
-                             in_axes=None,               # Inputs (states, actions) are shared
-                             out_axes=0,               # Stack outputs along the first axis
-                             axis_size=self.num_qs)      # Number of critics to create
-        qs = VmapCritic(self.hidden_dims,
-                        activations=self.activations)(states, actions)
-        return qs[0], qs[1] # Return the two Q-values separately
-
-
-
-# --- Temperature Parameter ---
-
-class Temperature(nn.Module):
-    initial_temperature: float = 1.0
-
-    @nn.compact
-    def __call__(self) -> jnp.ndarray:
-        # Parameter for the log of temperature, ensures temperature > 0.
-        log_temp = self.param('log_temp',
-                              init_fn=lambda key: jnp.full(
-                                  (), jnp.log(self.initial_temperature)))
-        return jnp.exp(log_temp)
 
 def update_temperature(state: SACState, entropy: float) -> Tuple[train_state.TrainState, InfoDict]:
     # Defines the loss function for temperature optimization.
@@ -298,13 +207,9 @@ def _sac_sample_step(state: SACState, observation: jnp.ndarray) -> Tuple[SACStat
 @jax.jit
 def _sac_sample_eval_step(state: SACState, observation: jnp.ndarray) -> jnp.ndarray:
     """Samples a deterministic action for evaluation (external JIT)."""
-    dist = state.actor.apply_fn({'params': state.actor.params}, observation)
-    if isinstance(dist, distrax.Transformed):
-        # Use the mode of the original distribution
-        action = dist.distribution.mode()
-    else:
-        # For non-transformed distributions, use mode directly
-        action = dist.mode()
+    dist = state.actor.apply_fn({'params': state.actor.params}, observation,temperature=.0)
+    action = dist.sample(seed=state.rng)
+    
     return action
 
 
@@ -329,10 +234,14 @@ def create_sac_learner(
     rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
     
     # Initialize Actor network and state
-    actor_def = NormalTanhPolicy(
+    actor_def = StochasticActor(
         config.hidden_dims,
         action_dim,
+        max_action=config.max_action,
+        log_std_min=config.policy_log_std_min,
+        log_std_max=config.policy_log_std_max,
         final_fc_init_scale=config.policy_final_fc_init_scale)
+    
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,

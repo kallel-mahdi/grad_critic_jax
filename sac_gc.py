@@ -8,15 +8,14 @@ import jax.numpy as jnp
 import optax
 import jax.flatten_util
 
+# Import networks
+from networks import  DoubleCritic, StochasticActor, Temperature
 
 # Import base SAC components
 from sac import (
     SACState,
     SACAgent,
     SACConfig ,
-    NormalTanhPolicy,
-    DoubleCritic,
-    Temperature,
     update_temperature,
     target_update,
     update_critic as base_update_critic,
@@ -378,9 +377,12 @@ def create_sac_gc_learner(
     rng, actor_key, critic_key, gamma_critic_key, temp_key = jax.random.split(rng, 5)
     
     # Initialize Actor network and state
-    actor_def = NormalTanhPolicy(
+    actor_def = StochasticActor(
         config.hidden_dims,
         action_dim,
+        max_action=config.max_action,
+        log_std_min=config.policy_log_std_min,
+        log_std_max=config.policy_log_std_max,
         final_fc_init_scale=policy_final_fc_init_scale)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(

@@ -19,11 +19,12 @@ training:
   batch_size: 256
   replay_buffer_capacity: 1_000_000
   eval_episodes: 10
+  update_frequency: 5
 
 # Logging settings
 logging:
   use_wandb: True
-  wandb_project: "sac_jax_hydra_julia2"
+  wandb_project: "sac_jax_hydra_test"
   wandb_entity: null
 
 # Seed

@@ -13,19 +13,10 @@ import wandb
 
 
 os.environ["WANDB_API_KEY"] = "28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
-os.environ["HTTPS_PROXY"] = "http://proxy:80"
-os.environ["WANDB__SERVICE_WAIT"] = "300"
-os.environ["WANDB_INIT_TIMEOUT"] = "600"
+# os.environ["HTTPS_PROXY"] = "http://proxy:80"
+# os.environ["WANDB__SERVICE_WAIT"] = "300"
+# os.environ["WANDB_INIT_TIMEOUT"] = "600"
 
-
-# --- Print environment variables for debugging ---
-print("--- W&B Environment Variables ---")
-print(f"WANDB_API_KEY: {'*' * 10 if os.environ.get('WANDB_API_KEY') else 'Not Set'}") # Mask API Key
-print(f"WANDB_INIT_TIMEOUT: {os.environ.get('WANDB_INIT_TIMEOUT')}")
-print(f"WANDB__SERVICE_WAIT: {os.environ.get('WANDB__SERVICE_WAIT')}")
-print(f"HTTPS_PROXY: {os.environ.get('HTTPS_PROXY')}")
-print("---------------------------------")
-#s.environ["HYDRA_FULL_ERROR"] = "1"
 
 @hydra.main(version_base=None, config_path="configs", config_name="base_config")
 def main(cfg: DictConfig):
@@ -135,11 +126,11 @@ def main(cfg: DictConfig):
 
         # Perform agent update if enough steps have passed
         if step_num >= cfg.training.start_steps:
-            batch = replay_buffer.sample(cfg.training.batch_size)
-            # Update agent using agent.update
-            # agent.update returns (new_agent_with_updated_state, info)
-            agent, update_info = agent.update(batch)
-            # The conditional logic based on gamma_correction is no longer needed here.
+
+            for i in range(cfg.training.update_frequency):
+
+                batch = replay_buffer.sample(cfg.training.batch_size)
+                agent, update_info = agent.update(batch)
 
             if cfg.logging.use_wandb and update_info:
                 wandb.log({f'train/{k}': v for k, v in update_info.items()}, commit=False)
@@ -148,9 +139,7 @@ def main(cfg: DictConfig):
         if step_num % cfg.training.eval_freq == 0:
             eval_returns = []
             for _ in range(cfg.training.eval_episodes):
-                 # Pass the agent object to evaluate, assume it uses agent.sample_eval
-                 # Assume evaluate returns (agent, avg_reward) - agent state might change if eval involved stateful components
-                 # If evaluate guarantees no state change, we could avoid updating the agent here.
+                
                  agent, avg_reward = evaluate(agent, eval_env, 1)
                  eval_returns.append(avg_reward)
 
