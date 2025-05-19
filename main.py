@@ -8,7 +8,9 @@ from sac import SACAgent
 from sac_gc import SACAgentGC
 from td3 import TD3Agent
 from td3_gc import TD3AgentGC
+from crossq import CrossQAgent
 from utils import ReplayBuffer, evaluate
+
 import wandb
 
 
@@ -69,6 +71,7 @@ def main(cfg: DictConfig):
         "SACGC": SACAgentGC,
         "TD3": TD3Agent,
         "TD3GC": TD3AgentGC,
+        "CrossQ": CrossQAgent,
     }
 
     agent_name = cfg.algorithm.agent_name
