@@ -19,7 +19,7 @@ training:
   batch_size: 256
   replay_buffer_capacity: 1_000_000
   eval_episodes: 10
-  update_frequency: 5
+  update_frequency: 1
 
 # Logging settings
 logging:

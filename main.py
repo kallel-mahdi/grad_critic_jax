@@ -124,8 +124,8 @@ def main(cfg: DictConfig):
             observation, _ = env.reset()
             if cfg.logging.use_wandb and 'episode' in info:
                  wandb.log({'train/episode_return': info['episode']['r'][0],
-                            'train/episode_length': info['episode']['l'][0],
-                            'step': step_num}, commit=False)
+                            'train/episode_length': info['episode']['l'][0]},
+                            step=step_num, commit=False)
 
         # Perform agent update if enough steps have passed
         if step_num >= cfg.training.start_steps:
@@ -136,7 +136,7 @@ def main(cfg: DictConfig):
                 agent, update_info = agent.update(batch)
 
             if cfg.logging.use_wandb and update_info:
-                wandb.log({f'train/{k}': v for k, v in update_info.items()}, commit=False)
+                wandb.log({f'train/{k}': v for k, v in update_info.items()},step=step_num, commit=False)
 
         # Evaluate agent periodically
         if step_num % cfg.training.eval_freq == 0:
@@ -151,10 +151,8 @@ def main(cfg: DictConfig):
             # Log evaluation results to wandb
             log_data = {"eval/avg_reward": avg_eval_reward, "step": step_num}
             if cfg.logging.use_wandb:
-                wandb.log(log_data, commit=True) # Commit updates here
-            else: # Commit previous train updates if not using wandb eval commit
-                 if step_num >= cfg.training.start_steps and update_info and cfg.logging.use_wandb:
-                     wandb.log({},commit=True)
+                wandb.log(log_data,step=step_num, commit=True) # Commit updates here
+          
 
             print(f"---------------------------------------")
             print(f"Step: {step_num}, Evaluation Avg Reward: {avg_eval_reward:.2f}")

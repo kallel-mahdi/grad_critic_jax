@@ -5,7 +5,7 @@ tqdm
 hydra-core
 omegaconf
 wandb
-jax
+jax[cuda12]==0.5.0
 jaxlib
 flax
 optax 

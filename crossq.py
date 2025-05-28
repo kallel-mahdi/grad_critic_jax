@@ -11,7 +11,12 @@ from flax.core.frozen_dict import FrozenDict
 import distrax
 
 # Import common components from utils
-from utils import Batch, PRNGKey, Params, InfoDict, BatchRenorm, SimbaResidualBlock
+from utils import Batch, PRNGKey, Params, InfoDict, BatchRenorm
+
+
+
+
+
 # Import base agent class
 from base_agent import RLAgent, RLAgentState, RLAgentConfig
 # Import Temperature from networks
@@ -37,9 +42,7 @@ class CrossQConfig(RLAgentConfig):
     renorm_warmup_steps: int = 100_000
     use_batch_norm: bool = True
     n_critics: int = 2
-    use_simba_layers: bool = False
-    scale_factor: int = 4
-    policy_delay: int = 1
+    policy_delay: int = 3
 
 # New state class for batch stats tracking
 class BatchNormTrainState(train_state.TrainState):
@@ -62,11 +65,7 @@ class StochasticActor(nn.Module):
     log_std_min: float = -20
     log_std_max: float = 2
     use_batch_norm: bool = True
-    batch_norm_momentum: float = 0.99
-    renorm_warmup_steps: int = 100_000
     final_fc_init_scale: float = 1.0
-    use_simba_layers: bool = False
-    scale_factor: int = 4
     
     @nn.compact
     def __call__(self, x: jnp.ndarray, temperature: float = 1.0, train: bool = False) -> Any:
@@ -76,56 +75,23 @@ class StochasticActor(nn.Module):
             
         # Apply BatchRenorm initially if used
         if self.use_batch_norm:
-            x = BatchRenorm(
-                use_running_average=not train,
-                momentum=self.batch_norm_momentum,
-                warmup_steps=self.renorm_warmup_steps,
-            )(x)
-        
-        # Process through hidden layers with appropriate normalization
-        if self.use_simba_layers:
-            # SimbaResidualBlock approach
-            for n_units in self.hidden_dims:
-                x = SimbaResidualBlock(
-                    n_units,
-                    nn.relu,
-                    self.scale_factor,
-                    lambda: BatchRenorm(
-                        use_running_average=not train,
-                        momentum=self.batch_norm_momentum,
-                        warmup_steps=self.renorm_warmup_steps,
-                    ),
-                )(x)
-            
-            # Final normalization before output
-            if self.use_batch_norm:
-                x = BatchRenorm(
-                    use_running_average=not train,
-                    momentum=self.batch_norm_momentum,
-                    warmup_steps=self.renorm_warmup_steps,
-                )(x)
+            x = BatchRenorm(use_running_average=not train,)(x)
         else:
-            # Standard MLP with BatchRenorm between layers
-            for i, n_units in enumerate(self.hidden_dims):
-                x = nn.Dense(n_units, kernel_init=nn.initializers.orthogonal(jnp.sqrt(2)))(x)
-                x = nn.relu(x)
-                if self.use_batch_norm:
-                    x = BatchRenorm(
-                        use_running_average=not train,
-                        momentum=self.batch_norm_momentum,
-                        warmup_steps=self.renorm_warmup_steps,
-                    )(x)
+            x_dummy = BatchRenorm(use_running_average=not train)(x)
+        
+        # Standard MLP with BatchRenorm between layers
+        for i, n_units in enumerate(self.hidden_dims):
+            x = nn.Dense(n_units)(x)
+            x = nn.relu(x)
+            if self.use_batch_norm:
+                x = BatchRenorm(use_running_average=not train,)(x)
+            else:
+                x_dummy = BatchRenorm(use_running_average=not train)(x)
         
         # Policy head outputs mean and log_std
-        mean = nn.Dense(
-            self.action_dim, 
-            kernel_init=nn.initializers.orthogonal(self.final_fc_init_scale)
-        )(x)
+        mean = nn.Dense(self.action_dim )(x)
         
-        log_std = nn.Dense(
-            self.action_dim,
-            kernel_init=nn.initializers.orthogonal(self.final_fc_init_scale)
-        )(x)
+        log_std = nn.Dense(self.action_dim)(x)
         
         # Clip log_std to specified range
         log_std = jnp.clip(log_std, self.log_std_min, self.log_std_max)
@@ -143,77 +109,42 @@ class StochasticActor(nn.Module):
 class Critic(nn.Module):
     hidden_dims: Sequence[int]
     use_batch_norm: bool = True
-    batch_norm_momentum: float = 0.99
-    renorm_warmup_steps: int = 100_000
-    use_simba_layers: bool = False
-    scale_factor: int = 4
+
     
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+        
         # Flatten observations if needed
         if len(observations.shape) > 2:
             observations = observations.reshape(observations.shape[0], -1)
         
-        # Concatenate observations and actions
         x = jnp.concatenate([observations, actions], -1)
-        
-        # Apply BatchRenorm initially if used
+
         if self.use_batch_norm:
             x = BatchRenorm(
-                use_running_average=not train,
-                momentum=self.batch_norm_momentum,
-                warmup_steps=self.renorm_warmup_steps,
-            )(x)
-        
-        # Process through hidden layers with appropriate normalization
-        if self.use_simba_layers:
-            # SimbaResidualBlock approach
-            x = nn.Dense(self.hidden_dims[0])(x)
-            
-            for n_units in self.hidden_dims:
-                x = SimbaResidualBlock(
-                    n_units,
-                    nn.relu,
-                    self.scale_factor,
-                    lambda: BatchRenorm(
-                        use_running_average=not train,
-                        momentum=self.batch_norm_momentum,
-                        warmup_steps=self.renorm_warmup_steps,
-                    ),
-                )(x)
-            
-            # Final normalization before output
-            if self.use_batch_norm:
-                x = BatchRenorm(
-                    use_running_average=not train,
-                    momentum=self.batch_norm_momentum,
-                    warmup_steps=self.renorm_warmup_steps,
-                )(x)
+                use_running_average=not train, )(x)
+      
         else:
-            # Standard MLP with BatchRenorm between layers
-            for i, n_units in enumerate(self.hidden_dims):
-                x = nn.Dense(n_units, kernel_init=nn.initializers.orthogonal(jnp.sqrt(2)))(x)
-                x = nn.relu(x)
-                if self.use_batch_norm:
-                    x = BatchRenorm(
-                        use_running_average=not train,
-                        momentum=self.batch_norm_momentum,
-                        warmup_steps=self.renorm_warmup_steps,
-                    )(x)
-        
-        # Output layer
-        x = nn.Dense(1, kernel_init=nn.initializers.orthogonal(1.0))(x)
-        return jnp.squeeze(x, -1)
+            x_dummy = BatchRenorm(use_running_average=not train)(x)
+
+        for n_units in self.hidden_dims:
+            x = nn.Dense(n_units)(x)
+            x = nn.relu(x)
+           
+
+            if self.use_batch_norm:
+                x = BatchRenorm(use_running_average=not train, )(x)
+            else:
+                x_dummy = BatchRenorm(use_running_average=not train)(x)
+
+        x = nn.Dense(1)(x)
+        return x.squeeze(-1) ### This is different from the original code
 
 
 class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
     use_batch_norm: bool = True
-    batch_norm_momentum: float = 0.99
-    renorm_warmup_steps: int = 100_000
     num_qs: int = 2
-    use_simba_layers: bool = False
-    scale_factor: int = 4
 
     @nn.compact
     def __call__(self, states, actions, train: bool = False):
@@ -230,10 +161,6 @@ class DoubleCritic(nn.Module):
         qs = VmapCritic(
             self.hidden_dims,
             use_batch_norm=self.use_batch_norm,
-            batch_norm_momentum=self.batch_norm_momentum,
-            renorm_warmup_steps=self.renorm_warmup_steps,
-            use_simba_layers=self.use_simba_layers,
-            scale_factor=self.scale_factor
         )(states, actions, train)
         
         return qs
@@ -263,15 +190,23 @@ def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[
     def actor_loss_fn(actor_params):
         # Apply actor model to get action distribution using actor's apply_fn
         variables = {'params': actor_params, 'batch_stats': state.actor.batch_stats}
-        dist = state.actor.apply_fn(variables, batch.observations, train=True, mutable=['batch_stats'])
         
-        # Handle the returned mutables
-        model_output, new_model_state = dist
+        # Always use mutable=["batch_stats"] regardless of whether batch norm is used
+        # This is the "dummy trick" - when batch norm is disabled, state_updates will just contain unchanged batch_stats
+        model_output, new_model_state = state.actor.apply_fn(
+            variables, batch.observations, train=True, mutable=['batch_stats']
+        )
+            
         actions, log_probs = model_output.sample_and_log_prob(seed=key_actor)
 
         # Evaluate actions using the critic network's apply_fn
         critic_variables = {'params': state.critic.params, 'batch_stats': state.critic.batch_stats}
-        q_values, _ = state.critic.apply_fn(critic_variables, batch.observations, actions, train=False, mutable=False)
+        
+        # Always use mutable=False for critic during actor update (no training)
+        q_values = state.critic.apply_fn(
+            critic_variables, batch.observations, actions, train=False, mutable=False
+        )
+        
         # Take min across critics
         q = jnp.min(q_values, axis=0)
 
@@ -286,7 +221,7 @@ def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[
     
     # Update actor
     new_actor = state.actor.apply_gradients(grads=grads)
-    # Update batch_stats with new values
+    # Update batch_stats with new values - converting to FrozenDict
     new_actor = new_actor.replace(batch_stats=new_model_state['batch_stats'])
 
     return new_actor, info
@@ -295,9 +230,6 @@ def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[
 def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[BatchNormTrainState, InfoDict]:
     # Key for sampling the next actions
     key_next_action = key_critic
-    
-    # Get temperature value (scalar)
-    temperature = state.temp.apply_fn({'params': state.temp.params})
     
     # Get next actions and log probabilities from the actor for the *next* observations.
     variables = {'params': state.actor.params, 'batch_stats': state.actor.batch_stats}
@@ -312,10 +244,12 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
     def critic_loss_fn(critic_params):
         # Joint forward pass through critic with both current and next pairs
         variables = {'params': critic_params, 'batch_stats': state.critic.batch_stats}
-        joint_output = state.critic.apply_fn(variables, joint_observations, joint_actions, train=True, mutable=['batch_stats'])
         
-        # Handle the returned values and mutables
-        joint_q_values, new_model_state = joint_output
+        # Always use mutable=["batch_stats"] regardless of whether batch norm is used
+        # This is the "dummy trick" - when batch norm is disabled, state_updates will just contain unchanged batch_stats
+        joint_q_values, new_model_state = state.critic.apply_fn(
+            variables, joint_observations, joint_actions, train=True, mutable=['batch_stats']
+        )
         
         # Split back into current and next Q-values
         batch_size = batch.observations.shape[0]
@@ -323,23 +257,23 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
         
         # Compute target Q-values (minimum across critics)
         min_next_q = jnp.min(next_q_values, axis=0)
-        
-        # # Apply entropy adjustment if specified
-        # if state.config.backup_entropy:
-        min_next_q -= temperature * next_log_probs
-        
+
         # Bellman target calculation
+        # Get temperature value (scalar)
+        temperature = state.temp.apply_fn({'params': state.temp.params})
+
         target_q = batch.rewards + state.config.discount * batch.masks * min_next_q
+        target_q -= state.config.discount * batch.masks * temperature * next_log_probs
         target_q = jax.lax.stop_gradient(target_q)
         
         # Compute losses for all critics
-        critic_losses = jnp.mean((current_q_values - target_q) ** 2, axis=1)
-        critic_loss = jnp.sum(critic_losses)
+        critic_loss = ((current_q_values[0] - target_q)**2 + (current_q_values[1] - target_q)**2).mean()
         
         # Return loss, new batch_stats, and auxiliary info
         return critic_loss, (new_model_state, {
             'critic_loss': critic_loss,
-            'q_values': jnp.mean(current_q_values, axis=1)
+            'q1': current_q_values[0].mean(),
+            'q2': current_q_values[1].mean()
         })
     
     # Compute gradients and update critic
@@ -347,7 +281,7 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
     
     # Update critic
     new_critic = state.critic.apply_gradients(grads=grads)
-    # Update batch_stats with new values
+    # Update batch_stats with new values - converting to FrozenDict
     new_critic = new_critic.replace(batch_stats=new_model_state['batch_stats'])
     
     return new_critic, info
@@ -378,7 +312,7 @@ def _crossq_update_step(state: CrossQState, batch: Batch) -> Tuple[CrossQState, 
         return new_actor, new_temp, {**actor_info, **alpha_info}
     
     def _no_update_actor():
-        return state.actor, state.temp, {'actor_loss': jnp.array(0.0), 'entropy': jnp.array(0.0), 'temperature': jnp.array(0.0), 'temp_loss': jnp.array(0.0)}
+        return state.actor, state.temp, {'actor_loss': jnp.nan, 'entropy': jnp.nan, 'temperature': jnp.nan, 'temp_loss': jnp.nan}
     
     new_actor, new_temp, actor_temp_info = jax.lax.cond(
         should_update_actor,
@@ -394,6 +328,8 @@ def _crossq_update_step(state: CrossQState, batch: Batch) -> Tuple[CrossQState, 
         rng=rng,
         step=state.step + 1
     )
+
+    
 
     return new_state, {**critic_info, **actor_temp_info}
 
@@ -433,22 +369,17 @@ def create_crossq_learner(
     
     # Initialize Actor network and state
     actor_def = StochasticActor(
-        config.hidden_dims,
+        [256,256],
         actions.shape[-1],
         max_action=config.max_action,
         log_std_min=config.policy_log_std_min,
         log_std_max=config.policy_log_std_max,
         final_fc_init_scale=config.policy_final_fc_init_scale,
         use_batch_norm=config.use_batch_norm,
-        batch_norm_momentum=config.batch_norm_momentum,
-        renorm_warmup_steps=config.renorm_warmup_steps,
-        use_simba_layers=config.use_simba_layers,
-        scale_factor=config.scale_factor
     )
     
     # Initialize actor
     actor_variables = actor_def.init(actor_key, observations, train=False)
-    
     # Create BatchNormTrainState for actor
     actor = BatchNormTrainState.create(
         apply_fn=actor_def.apply,
@@ -461,11 +392,7 @@ def create_crossq_learner(
     critic_def = DoubleCritic(
         config.hidden_dims,
         use_batch_norm=config.use_batch_norm,
-        batch_norm_momentum=config.batch_norm_momentum,
-        renorm_warmup_steps=config.renorm_warmup_steps,
-        num_qs=config.n_critics,
-        use_simba_layers=config.use_simba_layers,
-        scale_factor=config.scale_factor
+        num_qs=config.n_critics
     )
     
     # Initialize critic
