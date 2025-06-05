@@ -2,6 +2,7 @@
 wandb/
 *.wandb
 /wandb/*
+slurm_logs/*
 
 # Python
 __pycache__/

@@ -19,22 +19,22 @@ from td3 import (
     TD3State,
     TD3Agent,
     TD3Config,
-    update_critic as base_update_critic, # Use base critic update
-    target_update, # Reuse target update function
-
+    target_update,
+    update_critic as base_update_critic,
 )
 
 # Import common components from utils and base_agent
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
-from base_agent import RLAgent, RLAgentState, RLAgentConfig # Base agent definitions
 
 # --- Config and State for TD3-GC ---
 
 @struct.dataclass
 class TD3ConfigGC(TD3Config):
-    # Inherits all TD3Config fields
-    gamma_critic_lr: float
-    target_gamma_critic_update_period: int # Separate frequency for gamma target updates
+    # Inherits non-default fields from TD3Config
+    gamma_critic_lr: float 
+    target_gamma_critic_update_period: int 
+
+
 
 @struct.dataclass
 class TD3StateGC(TD3State):
@@ -52,7 +52,7 @@ class GammaCritic(nn.Module):
 
     def setup(self):
         # Main network excluding final layer
-        self.feature_net = MLP(self.hidden_dims, activations=self.activations, activate_final=True)
+        self.feature_net = MLP(self.hidden_dims, activate_final=True)
         # Gamma parameter output head
         self.gamma_head = nn.Dense(self.num_params, kernel_init=default_init())
 
@@ -60,7 +60,7 @@ class GammaCritic(nn.Module):
         inputs = jnp.concatenate([observations, actions], -1)
         features = self.feature_net(inputs)
         # Stop gradient flow from features
-        features = jax.lax.stop_gradient(features)
+        #features = jax.lax.stop_gradient(features)
         # Output gamma parameters
         gamma_params = self.gamma_head(features)
         return gamma_params
@@ -331,7 +331,7 @@ def _td3_gc_update_step(state: TD3StateGC, batch: Batch) -> Tuple[TD3StateGC, In
 
     # Use jax.lax.cond for conditional execution on device
     new_actor, new_target_actor_params, new_target_critic_params, actor_info = jax.lax.cond(
-        state.step % state.config.policy_frequency == 0,
+        state.step % state.config.policy_delay == 0,
         _update_actor_and_targets,
         _no_update_actor_and_targets,
         temp_state # Pass the temp_state containing new_critic and new_gamma_critic

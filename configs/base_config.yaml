@@ -24,7 +24,7 @@ training:
 # Logging settings
 logging:
   use_wandb: True
-  wandb_project: "sac_jax_hydra_test"
+  wandb_project: "sac_jax_fullgrad"
   wandb_entity: null
 
 # Seed

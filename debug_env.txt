@@ -1,0 +1,16 @@
+MODULES_COLOR=auto
+WANDB__SERVICE_WAIT=300
+MODULES_CMD=/apps/modules/5.0.1/libexec/modulecmd.tcl
+MODULES_AVAIL_OUTPUT=modulepath:alias:dirwsym:sym:tag
+__MODULES_SHARE_MANPATH=:1
+__MODULES_LMALTNAME=cuda/12.6.1&as|cuda/default&as|cuda/latest:cudnn/9.2.0.82-12.x&as|cudnn/default&as|cudnn/latest
+LOADEDMODULES=python/3.12-conda:cuda/12.6.1:cudnn/9.2.0.82-12.x
+WANDB_API_KEY=28996bd59f1ba2c5a8c3f2cc23d8673c327ae230
+HTTPS_PROXY=http://proxy:80
+__MODULES_LMCONFLICT=python/3.12-conda&python:cuda/12.6.1&cuda:cudnn/9.2.0.82-12.x&cudnn
+WANDB_INIT_TIMEOUT=600
+MODULECONTACT=support-hpc@fau.de
+MODULEPATH=/apps/modules/data/applications:/apps/modules/data/compiler:/apps/modules/data/development:/apps/modules/data/libraries:/apps/modules/data/tools:/apps/modules/data/via-spack:/apps/modules/data/deprecated:/apps/modules/data/testing:/apps/modules/data/conda
+MODULES_COLORS=hi=1:db=2:tr=2:se=2:er=91:wa=93:me=95:in=94:mp=1;94:di=94:al=96:sy=4:de=95:cm=92
+MODULESHOME=/apps/modules/5.0.1
+__MODULES_LMSOURCESH=python/3.12-conda&bash /apps/python/3.12-conda/etc/profile.d/conda.sh|prepend-path PATH /apps/python/3.12-conda/condabin|set-function __conda_activate {}|set-function __conda_exe {}|set-function __conda_hashr {}|set-function __conda_reactivate {}|set-function conda {}|setenv _CE_CONDA {}|setenv _CE_M {}|setenv CONDA_EXE /apps/python/3.12-conda/bin/conda|setenv CONDA_PYTHON_EXE /apps/python/3.12-conda/bin/python|setenv CONDA_SHLVL 0

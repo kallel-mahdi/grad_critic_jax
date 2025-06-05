@@ -13,64 +13,51 @@ import distrax
 # Import common components from utils
 from utils import Batch, PRNGKey, Params, InfoDict, BatchRenorm
 
-
-
-
-
 # Import base agent class
 from base_agent import RLAgent, RLAgentState, RLAgentConfig
-# Import Temperature from networks
-from networks import Temperature
 
 @struct.dataclass
-class CrossQConfig(RLAgentConfig):
+class CrossQTD3Config(RLAgentConfig):
     actor_lr: float
     critic_lr: float
-    temp_lr: float
     hidden_dims: Sequence[int]
     discount: float
-    target_entropy: float
-    backup_entropy: bool
-    init_temperature: float
-    policy_log_std_min: float
-    policy_log_std_max: float
-    policy_final_fc_init_scale: float
-    target_entropy_multiplier: float
+    policy_noise: float
+    noise_clip: float
+    policy_delay: int  # Frequency of delayed policy updates (same as TD3's policy_delay)
+    exploration_noise: float
     max_action: float
-    n_critics: int 
-    policy_delay: int 
+    beta1:float
+    final_fc_init_scale: float = 1.0
+    # BatchRenorm specific params
     batch_norm_momentum: float = 0.99
     renorm_warmup_steps: int = 100_000
     use_batch_norm: bool = True
+    n_critics: int = 2
     
-
-
 
 # New state class for batch stats tracking
 class BatchNormTrainState(train_state.TrainState):
     batch_stats: FrozenDict
 
 @struct.dataclass
-class CrossQState(RLAgentState):
+class CrossQTD3State(RLAgentState):
     rng: PRNGKey
     step: int
     actor: BatchNormTrainState
     critic: BatchNormTrainState
-    temp: train_state.TrainState
-    config: CrossQConfig  # Store configuration in the state
+    config: CrossQTD3Config  # Store configuration in the state
 
-# --- Actor Network with BatchRenorm ---
-class StochasticActor(nn.Module):
+# --- Deterministic Actor Network with BatchRenorm ---
+class DeterministicActor(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     max_action: float
-    log_std_min: float = -20
-    log_std_max: float = 2
     use_batch_norm: bool = True
     final_fc_init_scale: float = 1.0
     
     @nn.compact
-    def __call__(self, x: jnp.ndarray, temperature: float = 1.0, train: bool = False) -> Any:
+    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
         # Flatten input if needed - assuming x has shape [batch_size, *observation_dims]
         if len(x.shape) > 2:
             x = x.reshape(x.shape[0], -1)
@@ -90,29 +77,20 @@ class StochasticActor(nn.Module):
             else:
                 x_dummy = BatchRenorm(use_running_average=not train)(x)
         
-        # Policy head outputs mean and log_std
-        mean = nn.Dense(self.action_dim )(x)
+        # Final layer for deterministic actions
+        x = nn.Dense(
+            self.action_dim,
+            kernel_init=nn.initializers.uniform(scale=self.final_fc_init_scale)
+        )(x)
         
-        log_std = nn.Dense(self.action_dim)(x)
-        
-        # Clip log_std to specified range
-        log_std = jnp.clip(log_std, self.log_std_min, self.log_std_max)
-        
-        # Create distribution
-        base_dist = distrax.MultivariateNormalDiag(
-            loc=mean, scale_diag=jnp.exp(log_std) * temperature
-        )
-        
-        # Apply tanh transformation
-        return distrax.Transformed(base_dist, distrax.Block(distrax.Tanh(), ndims=1))
-
+        # Apply tanh and scale to max_action
+        return nn.tanh(x) * self.max_action
 
 # --- Critic Network with BatchRenorm ---
 class Critic(nn.Module):
     hidden_dims: Sequence[int]
     use_batch_norm: bool = True
 
-    
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False) -> jnp.ndarray:
         
@@ -125,14 +103,12 @@ class Critic(nn.Module):
         if self.use_batch_norm:
             x = BatchRenorm(
                 use_running_average=not train, )(x)
-      
         else:
             x_dummy = BatchRenorm(use_running_average=not train)(x)
 
         for n_units in self.hidden_dims:
             x = nn.Dense(n_units)(x)
             x = nn.relu(x)
-           
 
             if self.use_batch_norm:
                 x = BatchRenorm(use_running_average=not train, )(x)
@@ -140,8 +116,7 @@ class Critic(nn.Module):
                 x_dummy = BatchRenorm(use_running_average=not train)(x)
 
         x = nn.Dense(1)(x)
-        return x.squeeze(-1) ### This is different from the original code
-
+        return x.squeeze(-1)
 
 class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
@@ -167,39 +142,18 @@ class DoubleCritic(nn.Module):
         
         return qs
 
-
 # --- Update Functions ---
 
-def update_temperature(state: CrossQState, entropy: float) -> Tuple[train_state.TrainState, InfoDict]:
-    # Defines the loss function for temperature optimization.
-    def temperature_loss_fn(temp_params):
-        temperature = state.temp.apply_fn({'params': temp_params})
-        # Loss aims to match current entropy to target entropy.
-        temp_loss = temperature * (entropy - state.config.target_entropy).mean()
-        return temp_loss, {'temperature': temperature, 'temp_loss': temp_loss}
-
-    # Compute gradients and update temperature using TrainState's apply_gradients
-    grads, info = jax.grad(temperature_loss_fn, has_aux=True)(state.temp.params)
-    new_temp = state.temp.apply_gradients(grads=grads)
-
-    return new_temp, info
-
-
-def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[BatchNormTrainState, InfoDict]:
-    # Get temperature value (scalar)
-    temperature = state.temp.apply_fn({'params': state.temp.params})
+def update_actor(key_actor: PRNGKey, state: CrossQTD3State, batch: Batch) -> Tuple[BatchNormTrainState, InfoDict]:
 
     def actor_loss_fn(actor_params):
-        # Apply actor model to get action distribution using actor's apply_fn
+        # Apply actor model to get deterministic actions
         variables = {'params': actor_params, 'batch_stats': state.actor.batch_stats}
         
         # Always use mutable=["batch_stats"] regardless of whether batch norm is used
-        # This is the "dummy trick" - when batch norm is disabled, state_updates will just contain unchanged batch_stats
-        model_output, new_model_state = state.actor.apply_fn(
+        actions, new_model_state = state.actor.apply_fn(
             variables, batch.observations, train=True, mutable=['batch_stats']
         )
-            
-        actions, log_probs = model_output.sample_and_log_prob(seed=key_actor)
 
         # Evaluate actions using the critic network's apply_fn
         critic_variables = {'params': state.critic.params, 'batch_stats': state.critic.batch_stats}
@@ -209,14 +163,14 @@ def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[
             critic_variables, batch.observations, actions, train=False, mutable=False
         )
         
-        # Take min across critics
-        q = jnp.min(q_values, axis=0)
+        # Take first critic for actor loss (following TD3 convention)
+        q = q_values[0]
 
-        # Actor loss: encourages actions with high Q-values and high entropy.
-        actor_loss = (log_probs * temperature - q).mean()
+        # Actor loss: maximize Q-value (so negate it)
+        actor_loss = -q.mean()
 
-        # Return loss, new batch_stats, and auxiliary info (entropy).
-        return actor_loss, (new_model_state, {'actor_loss': actor_loss, 'entropy': -log_probs.mean()})
+        # Return loss, new batch_stats, and auxiliary info
+        return actor_loss, (new_model_state, {'actor_loss': actor_loss})
 
     # Compute gradients and update actor model using TrainState's apply_gradients
     (actor_loss, (new_model_state, info)), grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(state.actor.params)
@@ -229,14 +183,17 @@ def update_actor(key_actor: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[
     return new_actor, info
 
 
-def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tuple[BatchNormTrainState, InfoDict]:
-    # Key for sampling the next actions
-    key_next_action = key_critic
+def update_critic(key_critic: PRNGKey, state: CrossQTD3State, batch: Batch) -> Tuple[BatchNormTrainState, InfoDict]:
+    # Target Policy Smoothing: Add noise to target actions
+    noise = (jax.random.normal(key_critic, batch.actions.shape) * state.config.policy_noise
+            ).clip(-state.config.noise_clip, state.config.noise_clip)
     
-    # Get next actions and log probabilities from the actor for the *next* observations.
+    # Get next actions from the actor for the *next* observations (no target network)
     variables = {'params': state.actor.params, 'batch_stats': state.actor.batch_stats}
-    actor_output = state.actor.apply_fn(variables, batch.next_observations, train=False, mutable=False)
-    next_actions, next_log_probs = actor_output.sample_and_log_prob(seed=key_next_action)
+    next_actions = state.actor.apply_fn(variables, batch.next_observations, train=False, mutable=False)
+    
+    # Add clipped noise to next actions
+    next_actions = (next_actions + noise).clip(-state.config.max_action, state.config.max_action)
     
     # The key innovation: process both current and next observation-action pairs through the critic
     # This ensures BatchRenorm statistics are calculated on the joint distribution
@@ -248,7 +205,6 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
         variables = {'params': critic_params, 'batch_stats': state.critic.batch_stats}
         
         # Always use mutable=["batch_stats"] regardless of whether batch norm is used
-        # This is the "dummy trick" - when batch norm is disabled, state_updates will just contain unchanged batch_stats
         joint_q_values, new_model_state = state.critic.apply_fn(
             variables, joint_observations, joint_actions, train=True, mutable=['batch_stats']
         )
@@ -257,15 +213,11 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
         batch_size = batch.observations.shape[0]
         current_q_values, next_q_values = joint_q_values[:, :batch_size], joint_q_values[:, batch_size:]
         
-        # Compute target Q-values (minimum across critics)
+        # Compute target Q-values (minimum across critics, following TD3)
         min_next_q = jnp.min(next_q_values, axis=0)
 
-        # Bellman target calculation
-        # Get temperature value (scalar)
-        temperature = state.temp.apply_fn({'params': state.temp.params})
-
+        # Bellman target calculation (no entropy term like in SAC)
         target_q = batch.rewards + state.config.discount * batch.masks * min_next_q
-        target_q -= state.config.discount * batch.masks * temperature * next_log_probs
         target_q = jax.lax.stop_gradient(target_q)
         
         # Compute losses for all critics
@@ -292,7 +244,7 @@ def update_critic(key_critic: PRNGKey, state: CrossQState, batch: Batch) -> Tupl
 # --- Update Steps (External JIT functions) ---
 
 @jax.jit
-def _crossq_update_step(state: CrossQState, batch: Batch) -> Tuple[CrossQState, InfoDict]:
+def _crossq_td3_update_step(state: CrossQTD3State, batch: Batch) -> Tuple[CrossQTD3State, InfoDict]:
     """Single update step for all components (external JIT)."""
     rng, key_critic, key_actor = jax.random.split(state.rng, 3)
 
@@ -306,17 +258,12 @@ def _crossq_update_step(state: CrossQState, batch: Batch) -> Tuple[CrossQState, 
         # Update actor using updated critic
         temp_state = state.replace(critic=new_critic)
         new_actor, actor_info = update_actor(key_actor, temp_state, batch)
-        
-        # Update temperature using updated actor entropy
-        temp_state_for_temp = temp_state.replace(actor=new_actor)
-        new_temp, alpha_info = update_temperature(temp_state_for_temp, actor_info['entropy'])
-        
-        return new_actor, new_temp, {**actor_info, **alpha_info}
+        return new_actor, actor_info
     
     def _no_update_actor():
-        return state.actor, state.temp, {'actor_loss': jnp.nan, 'entropy': jnp.nan, 'temperature': jnp.nan, 'temp_loss': jnp.nan}
+        return state.actor, {'actor_loss': jnp.nan}
     
-    new_actor, new_temp, actor_temp_info = jax.lax.cond(
+    new_actor, actor_info = jax.lax.cond(
         should_update_actor,
         lambda: _update_actor(),
         lambda: _no_update_actor()
@@ -326,57 +273,56 @@ def _crossq_update_step(state: CrossQState, batch: Batch) -> Tuple[CrossQState, 
     new_state = state.replace(
         actor=new_actor,
         critic=new_critic,
-        temp=new_temp,
         rng=rng,
         step=state.step + 1
     )
 
-    
-
-    return new_state, {**critic_info, **actor_temp_info}
+    return new_state, {**critic_info, **actor_info}
 
 
 @jax.jit
-def _crossq_sample_step(state: CrossQState, observation: jnp.ndarray) -> Tuple[CrossQState, jnp.ndarray]:
-    """Samples an action using the policy and updates RNG state (external JIT)."""
-    rng, key = jax.random.split(state.rng)
+def _crossq_td3_sample_step(state: CrossQTD3State, observation: jnp.ndarray) -> Tuple[CrossQTD3State, jnp.ndarray]:
+    """Samples an action using the policy with exploration noise and updates RNG state (external JIT)."""
+    rng, key_noise = jax.random.split(state.rng)
+    
+    # Get deterministic action from policy
     variables = {'params': state.actor.params, 'batch_stats': state.actor.batch_stats}
-    dist = state.actor.apply_fn(variables, observation, train=False, mutable=False)
-    action = dist.sample(seed=key)
+    action = state.actor.apply_fn(variables, observation, train=False, mutable=False)
+    
+    # Add exploration noise
+    noise = jax.random.normal(key_noise, action.shape) * state.config.exploration_noise * state.config.max_action
+    action = (action + noise).clip(-state.config.max_action, state.config.max_action)
+    
     new_state = state.replace(rng=rng)
     return new_state, action
 
 @jax.jit
-def _crossq_sample_eval_step(state: CrossQState, observation: jnp.ndarray) -> jnp.ndarray:
+def _crossq_td3_sample_eval_step(state: CrossQTD3State, observation: jnp.ndarray) -> jnp.ndarray:
     """Samples a deterministic action for evaluation (external JIT)."""
     variables = {'params': state.actor.params, 'batch_stats': state.actor.batch_stats}
-    dist = state.actor.apply_fn(variables, observation, temperature=0.0, train=False, mutable=False)
-    action = dist.sample(seed=state.rng)
-
+    action = state.actor.apply_fn(variables, observation, train=False, mutable=False)
     return action
 
 
 # --- Factory Function ---
-def create_crossq_learner(
+def create_crossq_td3_learner(
     seed: int,
     observations: jnp.ndarray,  # Sample observation for initialization
     actions: jnp.ndarray,       # Sample action for initialization
-    config: CrossQConfig,
-) -> CrossQState:
-    """Factory function to create CrossQ state."""
+    config: CrossQTD3Config,
+) -> CrossQTD3State:
+    """Factory function to create CrossQ TD3 state."""
     
     # Initialize PRNG keys
     rng = jax.random.PRNGKey(seed)
-    rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
+    rng, actor_key, critic_key = jax.random.split(rng, 3)
     
     # Initialize Actor network and state
-    actor_def = StochasticActor(
+    actor_def = DeterministicActor(
         [256,256],
         actions.shape[-1],
         max_action=config.max_action,
-        log_std_min=config.policy_log_std_min,
-        log_std_max=config.policy_log_std_max,
-        final_fc_init_scale=config.policy_final_fc_init_scale,
+        final_fc_init_scale=config.final_fc_init_scale,
         use_batch_norm=config.use_batch_norm,
     )
     
@@ -387,7 +333,7 @@ def create_crossq_learner(
         apply_fn=actor_def.apply,
         params=actor_variables['params'],
         batch_stats=actor_variables.get('batch_stats', FrozenDict({})),
-        tx=optax.adam(learning_rate=config.actor_lr)
+        tx=optax.adam(learning_rate=config.actor_lr, b1=config.beta1)
     )
     
     # Initialize Critic network and state
@@ -405,33 +351,23 @@ def create_crossq_learner(
         apply_fn=critic_def.apply,
         params=critic_variables['params'],
         batch_stats=critic_variables.get('batch_stats', FrozenDict({})),
-        tx=optax.adam(learning_rate=config.critic_lr)
+        tx=optax.adam(learning_rate=config.critic_lr, b1=config.beta1)
     )
     
-    # Initialize Temperature parameter and state
-    temp_def = Temperature(config.init_temperature)
-    temp_params = temp_def.init(temp_key)['params']
-    temp = train_state.TrainState.create(
-        apply_fn=temp_def.apply,
-        params=temp_params,
-        tx=optax.adam(learning_rate=config.temp_lr)
-    )
-    
-    # Create the CrossQ state
-    return CrossQState(
+    # Create the CrossQ TD3 state
+    return CrossQTD3State(
         actor=actor,
         critic=critic,
-        temp=temp,
         rng=rng,
         step=0,
         config=config
     )
 
 
-# --- CrossQ Agent Class ---
+# --- CrossQ TD3 Agent Class ---
 @struct.dataclass
-class CrossQAgent(RLAgent):
-    state: CrossQState
+class CrossQTD3Agent(RLAgent):
+    state: CrossQTD3State
 
     @classmethod
     def create(
@@ -441,35 +377,33 @@ class CrossQAgent(RLAgent):
         actions: jnp.ndarray,
         agent_config: Dict,
         **kwargs  # Accept potential extra kwargs from base class
-    ) -> "CrossQAgent":
-        """Creates the CrossQAgent with its initial state."""
-        # Set target entropy if not already specified
-        agent_config["target_entropy"] = -actions.shape[-1] * agent_config["target_entropy_multiplier"]
+    ) -> "CrossQTD3Agent":
+        """Creates the CrossQTD3Agent with its initial state."""
         
         # Create initial state
-        initial_state = create_crossq_learner(
+        initial_state = create_crossq_td3_learner(
             seed=seed,
             observations=observations,
             actions=actions,
-            config=CrossQConfig(**agent_config),
+            config=CrossQTD3Config(**agent_config),
         )
         
         return cls(state=initial_state)
 
-    def update(self, batch: Batch) -> Tuple["CrossQAgent", InfoDict]:
-        """Performs a single CrossQ training step using the external JIT function."""
-        new_state, info = _crossq_update_step(self.state, batch)
+    def update(self, batch: Batch) -> Tuple["CrossQTD3Agent", InfoDict]:
+        """Performs a single CrossQ TD3 training step using the external JIT function."""
+        new_state, info = _crossq_td3_update_step(self.state, batch)
         # Return a new agent instance wrapping the new state
-        return CrossQAgent(state=new_state), info
+        return CrossQTD3Agent(state=new_state), info
 
-    def sample(self, observation: jnp.ndarray) -> Tuple["CrossQAgent", jnp.ndarray]:
+    def sample(self, observation: jnp.ndarray) -> Tuple["CrossQTD3Agent", jnp.ndarray]:
         """Samples an action stochastically using the external JIT function."""
-        new_state, action = _crossq_sample_step(self.state, observation)
+        new_state, action = _crossq_td3_sample_step(self.state, observation)
         # Return a new agent instance wrapping the new state (with updated RNG)
-        return CrossQAgent(state=new_state), action
+        return CrossQTD3Agent(state=new_state), action
 
-    def sample_eval(self, observation: jnp.ndarray) -> Tuple["CrossQAgent", jnp.ndarray]:
+    def sample_eval(self, observation: jnp.ndarray) -> Tuple["CrossQTD3Agent", jnp.ndarray]:
         """Samples an action deterministically using the external JIT function."""
-        action = _crossq_sample_eval_step(self.state, observation)
+        action = _crossq_td3_sample_eval_step(self.state, observation)
         # Evaluation sampling doesn't change the agent's state (no RNG update)
         return self, action

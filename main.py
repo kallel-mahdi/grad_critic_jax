@@ -9,10 +9,13 @@ from sac_gc import SACAgentGC
 from td3 import TD3Agent
 from td3_gc import TD3AgentGC
 from crossq import CrossQAgent
+from crossq_gc import CrossQAgentGC
+from crossq3 import CrossQTD3Agent
 from utils import ReplayBuffer, evaluate
 
 import wandb
-
+import jax
+import jax.numpy as jnp
 
 os.environ["WANDB_API_KEY"] = "28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
 # os.environ["HTTPS_PROXY"] = "http://proxy:80"
@@ -23,9 +26,18 @@ os.environ["WANDB_API_KEY"] = "28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
 @hydra.main(version_base=None, config_path="configs", config_name="base_config")
 def main(cfg: DictConfig):
     # --- Setup ---
+
+
+    print(f"JAX backend: {jax.lib.xla_bridge.get_backend().platform}")
+    print(f"JAX devices: {jax.local_devices()}")
+
+    # Simple GPU test
+    x = jnp.array([1, 2, 3])
+    print(f"Simple JAX operation result: {x + 1}")
     print("Configuration:\n", OmegaConf.to_yaml(cfg))
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     print(f"Output directory: {output_dir}")
+
 
     # Initialize Weights & Biases
     if cfg.logging.use_wandb:
@@ -72,6 +84,8 @@ def main(cfg: DictConfig):
         "TD3": TD3Agent,
         "TD3GC": TD3AgentGC,
         "CrossQ": CrossQAgent,
+        "CrossQGC": CrossQAgentGC,
+        "CrossQ3": CrossQTD3Agent,
     }
 
     agent_name = cfg.algorithm.agent_name
@@ -80,6 +94,7 @@ def main(cfg: DictConfig):
 
     SelectedAgentClass = agent_classes[agent_name]
     print(f"Using agent: {agent_name}")
+
 
     # Create the selected agent
     agent = SelectedAgentClass.create(

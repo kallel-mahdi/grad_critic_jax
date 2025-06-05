@@ -56,7 +56,7 @@ def filter_none_values(d: dict) -> dict:
     return {key: value for key, value in d.items() if value is not None}
 
 
-@hydra.main(version_base="1.2", config_path="./configs/launcher", config_name="slurm_julia2")
+@hydra.main(version_base="1.2", config_path="./configs/launcher", config_name="slurm")
 def main(cfg: DictConfig) -> None:
     """
     Main entry point for launching multiple Stoix experiments on SLURM-based cluster.
@@ -94,7 +94,7 @@ def main(cfg: DictConfig) -> None:
     # Update the executor with SLURM parameters
     executor.update_parameters(
         slurm_job_name=cfg.experiment_group,
-        setup=list(cfg.slurm.setup_commands), # Use 'setup' to run on SLURM node
+        slurm_setup=list(cfg.slurm.setup_commands), # Use 'setup' to run on SLURM node
         slurm_additional_parameters=slurm_params_additional,
         **slurm_params_direct # Pass direct parameters like time, mem_gb, etc.
     )

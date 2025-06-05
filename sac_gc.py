@@ -56,7 +56,7 @@ class GammaCritic(nn.Module):
         inputs = jnp.concatenate([observations, actions], -1)
         features = self.feature_net(inputs)
         # Stop gradient flow from features
-        features = jax.lax.stop_gradient(features)
+        #features = jax.lax.stop_gradient(features)
         # Output gamma parameters
         gamma_params = self.gamma_head(features)
         return gamma_params

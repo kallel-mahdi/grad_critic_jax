@@ -25,10 +25,10 @@ class TD3Config(RLAgentConfig):
     tau: float
     policy_noise: float
     noise_clip: float
-    policy_frequency: int  # Frequency of delayed policy updates
+    policy_delay: int
     exploration_noise: float
-    max_action: float # To clip actions during training and exploration
-
+    max_action: float
+    final_fc_init_scale: float
 
 @struct.dataclass
 class TD3State(RLAgentState): # Inherit from RLAgentState
@@ -141,7 +141,7 @@ def _td3_update_step(state: TD3State, batch: Batch) -> Tuple[TD3State, InfoDict]
 
     # Use jax.lax.cond for conditional execution on device
     new_actor, new_target_actor_params, new_target_critic_params, actor_info = jax.lax.cond(
-        state.step % state.config.policy_frequency == 0,
+        state.step % state.config.policy_delay == 0,
         _update_actor_and_targets,
         _no_update_actor_and_targets,
         (state, new_critic) # Pass state and the *new* critic state
