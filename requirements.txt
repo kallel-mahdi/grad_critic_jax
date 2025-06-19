@@ -9,4 +9,4 @@ jax[cuda12]==0.6.0
 flax
 optax 
 distrax
-nvidia-cublas-cu12==12.9.0.13##temporary fix
+nvidia-cublas-cu12==12.9.0.13

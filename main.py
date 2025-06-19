@@ -37,7 +37,8 @@ def main(cfg: DictConfig):
     print("Configuration:\n", OmegaConf.to_yaml(cfg))
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     print(f"Output directory: {output_dir}")
-
+    
+    
 
     # Initialize Weights & Biases
     if cfg.logging.use_wandb:
@@ -63,6 +64,14 @@ def main(cfg: DictConfig):
     # Create environment
     env = gym.make(cfg.environment.name)
     eval_env = gym.make(cfg.environment.name)  # Separate env for evaluation
+    
+    
+    # action_scale=jnp.array((env.action_space.high - env.action_space.low) / 2.0)
+    # action_bias=jnp.array((env.action_space.high + env.action_space.low) / 2.0)
+    
+    # print(f"Action scale: {action_scale}")
+    # print(f"Action bias: {action_bias}")
+
 
     # Set random seeds
     np.random.seed(cfg.seed)

@@ -5,8 +5,8 @@ import jax.numpy as jnp
 import distrax
 # --- Common Network Utilities ---
 
-def default_init(scale: Optional[float] = jnp.sqrt(2)):
-    return nn.initializers.orthogonal(scale)
+# def default_init(scale: Optional[float] = jnp.sqrt(2)):
+#     return nn.initializers.orthogonal(scale)
 
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
@@ -17,7 +17,8 @@ class MLP(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
         for i, size in enumerate(self.hidden_dims):
-            x = nn.Dense(size, kernel_init=default_init())(x)
+            #x = nn.Dense(size, kernel_init=default_init())(x)
+            x = nn.Dense(size)(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 x = self.activations(x)
                 if self.dropout_rate is not None:
@@ -67,7 +68,6 @@ class DeterministicActor(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     max_action: float # Needed for TD3's action output clipping/scaling if not handled by scale/bias
-    final_fc_init_scale: float
     dropout_rate: float = None
 
     @nn.compact
@@ -75,14 +75,18 @@ class DeterministicActor(nn.Module):
                  observations: jnp.ndarray,
                  training: bool = False ):
         
-        outputs = MLP(self.hidden_dims,
-                activations=nn.relu,
-                activate_final=True,
-                dropout_rate=self.dropout_rate)(observations,
-                                              training=training)
-        action = nn.Dense(self.action_dim,
-                          kernel_init=default_init(
-                              self.final_fc_init_scale))(outputs) * self.max_action # Scale output to action range
+        # outputs = MLP(self.hidden_dims,
+        #         activations=nn.relu,
+        #         activate_final=True,
+        #         dropout_rate=self.dropout_rate)(observations,
+        #                                       training=training)
+        # action = nn.Dense(self.action_dim)(outputs) * self.max_action # Scale output to action range
+        x = nn.Dense(256)(observations)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.action_dim)(x)
+        action = nn.tanh(x)
         return action
 
 
@@ -111,13 +115,13 @@ class StochasticActor(nn.Module):
                                                       training=training)
 
         means = nn.Dense(self.action_dim,
-                         kernel_init=default_init(
-                             self.final_fc_init_scale))(outputs)
+                         #kernel_init=default_init(self.final_fc_init_scale)
+                         )(outputs)
      
     
         log_stds = nn.Dense(self.action_dim,
-                            kernel_init=default_init(
-                                self.final_fc_init_scale))(outputs)
+                            #kernel_init=default_init(self.final_fc_init_scale)
+                            )(outputs)
 
 
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)

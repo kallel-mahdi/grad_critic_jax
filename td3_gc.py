@@ -370,8 +370,7 @@ def create_td3_gc_learner(
 
     # Initialize Actor network and state (same as TD3)
     actor_def = DeterministicActor(action_dim=action_dim, max_action=config.max_action,
-                                   hidden_dims=config.hidden_dims,
-                                   final_fc_init_scale=config.final_fc_init_scale)
+                                   hidden_dims=config.hidden_dims)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,
