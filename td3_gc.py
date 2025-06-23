@@ -326,7 +326,7 @@ def _td3_gc_update_step(state: TD3StateGC, batch: Batch) -> Tuple[TD3StateGC, In
 
     def _no_update_actor_and_targets(state_for_actor_update):
         # Keep actor and targets the same, return empty actor info
-        actor_info = {'actor_loss': 0.0} # Or jnp.nan? Log appropriately outside.
+        actor_info = {'actor_loss': jnp.nan} # Or jnp.nan? Log appropriately outside.
         return state_for_actor_update.actor, state_for_actor_update.target_actor_params, state_for_actor_update.target_critic_params, actor_info
 
     # Use jax.lax.cond for conditional execution on device

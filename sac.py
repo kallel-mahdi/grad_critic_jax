@@ -35,6 +35,7 @@ class SACConfig(RLAgentConfig):
     policy_final_fc_init_scale: float 
     target_entropy_multiplier: float
     max_action: float
+    policy_delay: int
 
 @struct.dataclass
 class SACState(RLAgentState): # Inherit from RLAgentState
@@ -157,30 +158,43 @@ def _sac_update_step(state: SACState, batch: Batch) -> Tuple[SACState, InfoDict]
 
     # Update critic
     new_critic, critic_info = update_critic(key_critic, state, batch)
+    state = state.replace(critic=new_critic)
 
     # Conditionally update target critic parameters
-    def _update_target(state_and_new_critic):
-        state, new_critic = state_and_new_critic
+    def _update_target(state):
         return target_update(new_critic.params, state.target_critic_params, state.config.tau)
 
-    def _no_update_target(state_and_new_critic):
-        state, _ = state_and_new_critic
+    def _no_update_target(state):
         return state.target_critic_params
 
     new_target_critic_params = jax.lax.cond(
         state.step % state.config.target_update_period == 0,
         _update_target,
         _no_update_target,
-        (state, new_critic)
+        state
     )
 
-    # Update actor using potentially updated critic
-    temp_state_for_actor = state.replace(critic=new_critic)
-    new_actor, actor_info = update_actor(key_actor, temp_state_for_actor, batch)
+    # Conditional Actor and Temperature Updates (Delayed Policy Update)
+    def _update_actor_and_temp(state):
+        # Update actor using potentially updated critic
+        new_actor, actor_info = update_actor(key_actor, state, batch)
 
-    # Update temperature using potentially updated actor
-    temp_state_for_temp = temp_state_for_actor.replace(actor=new_actor)
-    new_temp, alpha_info = update_temperature(temp_state_for_temp, actor_info['entropy'])
+        # Update temperature using potentially updated actor
+        new_temp, alpha_info = update_temperature(state, actor_info['entropy'])
+        
+        return new_actor, new_temp, {**actor_info, **alpha_info}
+
+    def _no_update_actor_and_temp(state):
+        # Keep actor and temperature the same, return empty info
+        return state.actor, state.temp, {'actor_loss': jnp.nan, 'entropy': jnp.nan, 'temperature': jnp.nan, 'temp_loss': jnp.nan}
+
+    # Use jax.lax.cond for conditional execution on device
+    new_actor, new_temp, policy_info = jax.lax.cond(
+        state.step % state.config.policy_delay == 0,
+        _update_actor_and_temp,
+        _no_update_actor_and_temp,
+        state
+    )
 
     # Create new state with updated values
     new_state = state.replace(
@@ -192,7 +206,7 @@ def _sac_update_step(state: SACState, batch: Batch) -> Tuple[SACState, InfoDict]
         step=state.step + 1
     )
 
-    return new_state, {**critic_info, **actor_info, **alpha_info}
+    return new_state, {**critic_info, **policy_info}
 
 
 @jax.jit

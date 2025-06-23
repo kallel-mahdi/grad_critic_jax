@@ -121,30 +121,28 @@ def _td3_update_step(state: TD3State, batch: Batch) -> Tuple[TD3State, InfoDict]
 
     # Update critic first
     new_critic, critic_info = update_critic(key_critic, state, batch)
+    state = state.replace(critic=new_critic)
 
     # Conditional Actor and Target Updates (Delayed Policy Update)
-    def _update_actor_and_targets(state_and_new_critic):
-        state, new_critic = state_and_new_critic
+    def _update_actor_and_targets(state):
         # Update actor using the new critic params
-        temp_state_for_actor = state.replace(critic=new_critic)
-        new_actor, actor_info = update_actor(temp_state_for_actor, batch)
+        new_actor, actor_info = update_actor(state, batch)
 
         # Soft update target networks
         new_target_critic_params = target_update(new_critic.params, state.target_critic_params, state.config.tau)
         new_target_actor_params = target_update(new_actor.params, state.target_actor_params, state.config.tau)
         return new_actor, new_target_actor_params, new_target_critic_params, actor_info
 
-    def _no_update_actor_and_targets(state_and_new_critic):
-        state, _ = state_and_new_critic
+    def _no_update_actor_and_targets(state):
         # Keep actor and targets the same, return empty actor info
-        return state.actor, state.target_actor_params, state.target_critic_params, {'actor_loss': 0.0}
+        return state.actor, state.target_actor_params, state.target_critic_params, {'actor_loss': jnp.nan}
 
     # Use jax.lax.cond for conditional execution on device
     new_actor, new_target_actor_params, new_target_critic_params, actor_info = jax.lax.cond(
         state.step % state.config.policy_delay == 0,
         _update_actor_and_targets,
         _no_update_actor_and_targets,
-        (state, new_critic) # Pass state and the *new* critic state
+        state,
     )
 
     # Create new state with updated values

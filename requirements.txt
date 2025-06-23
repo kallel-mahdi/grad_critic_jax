@@ -5,7 +5,7 @@ tqdm
 hydra-core
 omegaconf
 wandb
-jax[cuda12]==0.6.0
+jax[cuda12]
 flax
 optax 
 distrax
