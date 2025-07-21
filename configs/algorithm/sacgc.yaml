@@ -21,4 +21,4 @@ target_gamma_critic_update_period: 1
 # Parameter used to calculate target_entropy in main.py
 target_entropy_multiplier: 1.0 
 max_action: 1.0
-policy_delay: 5
+policy_delay: 1

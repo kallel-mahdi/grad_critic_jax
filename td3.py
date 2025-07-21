@@ -94,7 +94,7 @@ def update_actor(state: TD3State, batch: Batch) -> Tuple[train_state.TrainState,
         q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
 
         # Actor loss: maximize Q-value of the generated actions.
-        actor_loss = -q1.mean()
+        actor_loss = -(batch.discounts * q1).mean()
 
         return actor_loss, {'actor_loss': actor_loss}
 

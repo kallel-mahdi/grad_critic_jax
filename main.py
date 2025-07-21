@@ -123,6 +123,7 @@ def main(cfg: DictConfig):
 
     # Training loop
     observation, _ = env.reset(seed=cfg.seed)
+    discount= 1.
     for step_num in tqdm(range(1, cfg.training.max_steps + 1), desc=f"Training {cfg.environment.name}"):
         if step_num < cfg.training.start_steps:
             # Sample random actions before training starts
@@ -136,9 +137,10 @@ def main(cfg: DictConfig):
         next_observation, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         mask = 1.0 - float(terminated)  # Mask is 1 if not terminated (for critic target)
+        if cfg.training.discount_grad : discount *= cfg.algorithm.discount
 
         # Store transition in replay buffer
-        replay_buffer.add(observation, action, reward, mask, next_observation)
+        replay_buffer.add(observation, action, reward, mask, next_observation, discount)
 
         # Update observation
         observation = next_observation
@@ -165,21 +167,24 @@ def main(cfg: DictConfig):
         # Evaluate agent periodically
         if step_num % cfg.training.eval_freq == 0:
             eval_returns = []
+            eval_disc_returns = []
             for _ in range(cfg.training.eval_episodes):
                 
-                 agent, avg_reward = evaluate(agent, eval_env, 1)
+                 agent, avg_reward, avg_disc_reward = evaluate(agent, eval_env, 1,discount)
                  eval_returns.append(avg_reward)
+                 eval_disc_returns.append(avg_disc_reward)
 
 
             avg_eval_reward = np.mean(eval_returns)
+            avg_eval_disc_reward = np.mean(eval_disc_returns)
             # Log evaluation results to wandb
-            log_data = {"eval/avg_reward": avg_eval_reward, "step": step_num}
+            log_data = {"eval/avg_reward": avg_eval_reward, "eval/avg_disc_reward": avg_eval_disc_reward, "step": step_num}
             if cfg.logging.use_wandb:
                 wandb.log(log_data,step=step_num, commit=True) # Commit updates here
           
 
             print(f"---------------------------------------")
-            print(f"Step: {step_num}, Evaluation Avg Reward: {avg_eval_reward:.2f}")
+            print(f"Step: {step_num}, Evaluation Avg Reward: {avg_eval_reward:.2f}, Evaluation Avg Discounted Reward: {avg_eval_disc_reward:.2f}")
             print(f"---------------------------------------")
 
     env.close()

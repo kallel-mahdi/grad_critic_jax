@@ -178,7 +178,7 @@ def update_actor(state: TD3StateGC, batch: Batch) -> Tuple[train_state.TrainStat
     def actor_loss_fn(actor_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
         actions = state.actor.apply_fn({'params': actor_params}, batch.observations)
         q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
-        actor_loss = -q1.mean()
+        actor_loss = -batch.discounts * q1.mean()
         return actor_loss, {'actor_loss': actor_loss} # Base actor loss
 
     # Compute the original gradients

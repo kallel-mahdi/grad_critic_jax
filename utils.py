@@ -22,6 +22,7 @@ class Batch:
     rewards: jnp.ndarray
     masks: jnp.ndarray
     next_observations: jnp.ndarray
+    discounts: jnp.ndarray
 
 # --- Replay Buffer ---
 
@@ -40,15 +41,16 @@ class ReplayBuffer:
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.masks = np.zeros(capacity, dtype=np.float32)
         self.next_observations = np.zeros((capacity, obs_dim), dtype=np.float32)
+        self.discounts = np.zeros(capacity, dtype=np.float32)
 
     def add(self, obs: np.ndarray, action: np.ndarray, reward: float,
-            mask: float, next_obs: np.ndarray):
+            mask: float, next_obs: np.ndarray, discount: float):
         self.observations[self.ptr] = obs
         self.actions[self.ptr] = action
         self.rewards[self.ptr] = reward
         self.masks[self.ptr] = mask
         self.next_observations[self.ptr] = next_obs
-
+        self.discounts[self.ptr] = discount
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -60,7 +62,8 @@ class ReplayBuffer:
             'actions': self.actions[idx],
             'rewards': self.rewards[idx],
             'masks': self.masks[idx],
-            'next_observations': self.next_observations[idx]
+            'next_observations': self.next_observations[idx],
+            'discounts': self.discounts[idx]
         }
         # Transfer all data at once to reduce overhead
         batch_data_jax = jax.device_put(batch_data)
@@ -69,7 +72,8 @@ class ReplayBuffer:
             actions=batch_data_jax['actions'],
             rewards=batch_data_jax['rewards'],
             masks=batch_data_jax['masks'],
-            next_observations=batch_data_jax['next_observations']
+            next_observations=batch_data_jax['next_observations'],
+            discounts=batch_data_jax['discounts']
         )
 
     def __len__(self) -> int:
@@ -355,22 +359,26 @@ def sample_actions(state: struct.dataclass, observations: jnp.ndarray,
 
 
 # --- Evaluation Function ---
-def evaluate(agent: struct.dataclass, env: gym.Env, num_episodes: int) -> Tuple[struct.dataclass, float]:
+def evaluate(agent: struct.dataclass, env: gym.Env, num_episodes: int,discount: float) -> Tuple[struct.dataclass, float]:
     """Evaluates the agent's performance in the environment."""
     total_reward = 0.0
+    total_disc_reward = 0.0
     
     for _ in range(num_episodes):
         observation, _ = env.reset()
         done = False
         episode_reward = 0.0
-        
+        disc_episode_reward = 0.0
+        gamma = 1.0
         while not done:
             # Use agent's sample_eval method for deterministic evaluation actions
             agent, action = agent.sample_eval(observation)
             observation, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             episode_reward += reward
+            disc_episode_reward += gamma * reward
+            gamma *= discount
             
         total_reward += episode_reward
-        
-    return agent, total_reward / num_episodes
+        total_disc_reward += disc_episode_reward
+    return agent, total_reward / num_episodes, total_disc_reward / num_episodes

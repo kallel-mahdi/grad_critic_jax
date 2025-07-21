@@ -20,6 +20,7 @@ training:
   replay_buffer_capacity: 1_000_000
   eval_episodes: 10
   update_frequency: 1
+  discount_grad: True
 
 # Logging settings
 logging:
