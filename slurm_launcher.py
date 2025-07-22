@@ -9,7 +9,7 @@ from omegaconf import DictConfig
 
 
 def run_experiment(algorithm_exec_file: str, environment: str, seed: int, 
-                   algorithm: str, update_frequency: int, wandb_project: str, discount_grad: bool) -> None:
+                   algorithm: str, policy_delay: int, wandb_project: str, discount_grad: bool) -> None:
     """
     Runs a single experiment via a subprocess run, passing the full inherited environment.
 
@@ -19,12 +19,12 @@ def run_experiment(algorithm_exec_file: str, environment: str, seed: int,
         seed: Random seed for reproducibility
         algorithm: Name of the algorithm (e.g., 'SAC', 'TD3GC')
     """
-    print(f"--- Starting experiment: {algorithm} on {environment} with seed {seed} update_frequency={update_frequency} wandb_project={wandb_project} ({algorithm_exec_file}) ---")
+    print(f"--- Starting experiment: {algorithm} on {environment} with seed {seed} policy_delay={policy_delay} wandb_project={wandb_project} ({algorithm_exec_file}) ---")
     print(f"Launcher CWD: {os.getcwd()}")
 
     # Assuming python is in .venv/bin relative to the job's working directory
-    cmd = f".venv/bin/python {algorithm_exec_file} environment={environment} seed={seed} algorithm={algorithm} \
-                            training.update_frequency={update_frequency} logging.wandb_project={wandb_project} training.discount_grad={discount_grad}"
+    cmd = f".venv2/bin/python {algorithm_exec_file} environment={environment} seed={seed} algorithm={algorithm} \
+                            algorithm.policy_delay={policy_delay} logging.wandb_project={wandb_project} training.discount_grad={discount_grad}"
     print(f"Executing command: {cmd}")
 
     # Pass a copy of the current environment to the subprocess.
@@ -103,17 +103,17 @@ def main(cfg: DictConfig) -> None:
     # ---------------------------------------------------------------------------
     jobs = []
     # Prepare the Cartesian product of algorithm_execs, environments, seeds, algorithms.
-    for algorithm_exec, environment, seed, alg_name, update_frequency, wandb_project, discount_grad in itertools.product(
+    for algorithm_exec, environment, seed, alg_name, policy_delay, wandb_project, discount_grad in itertools.product(
         cfg.experiment.algorithm_exec_files,
         cfg.experiment.environments,
         cfg.experiment.seeds,
         cfg.experiment.algorithm,
-        cfg.experiment.update_frequency,
+        cfg.experiment.policy_delay,
         cfg.experiment.wandb_project,
         cfg.experiment.discount_grad
     ):
         print(f"Submitting independent job for {alg_name} on {environment} seed={seed}")
-        job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name, update_frequency, wandb_project, discount_grad)
+        job = executor.submit(run_experiment, algorithm_exec, environment, seed, alg_name, policy_delay, wandb_project, discount_grad)
         print(f" -> SLURM Job ID: {job.job_id}")
         jobs.append(job)
     # ---------------------------------------------------------------------------

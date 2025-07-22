@@ -1,0 +1,24 @@
+# TD3-GCBC Configuration
+agent_name: TD3GCBC
+actor_lr: 3e-4
+critic_lr: 3e-4
+hidden_dims: [256, 256]
+discount: 0.99
+tau: 0.005
+policy_noise: 0.2
+noise_clip: 0.5
+policy_delay: 2
+exploration_noise: 0.0    # No exploration in offline setting
+max_action: 1.0
+gamma_critic_lr: 3e-4
+target_gamma_critic_update_period: 1
+final_fc_init_scale: 1.0
+
+# TD3BC specific
+alpha: 2.5
+use_bc_loss: true
+n_jitted_updates: 8
+batch_size: 256
+max_steps: 1000000
+data_size: 1000000
+normalize_state: true 

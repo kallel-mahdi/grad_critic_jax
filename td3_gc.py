@@ -25,10 +25,12 @@ from td3 import (
 
 # Import common components from utils and base_agent
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+# Import composable actor updates
+from actor_updates import update_td3gc_actor
 
 # --- Config and State for TD3-GC ---
 
-@struct.dataclass
+@struct.dataclass(kw_only=True)
 class TD3ConfigGC(TD3Config):
     # Inherits non-default fields from TD3Config
     gamma_critic_lr: float 
@@ -172,105 +174,8 @@ def update_gamma_critic(key_gamma: PRNGKey, state: TD3StateGC, batch: Batch) -> 
 # --- TD3-GC Actor Update (with Gamma Correction) ---
 
 def update_actor(state: TD3StateGC, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
-    """Updates the TD3 actor with gradient correction."""
-
-    # Define the standard TD3 actor loss function
-    def actor_loss_fn(actor_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        actions = state.actor.apply_fn({'params': actor_params}, batch.observations)
-        q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
-        actor_loss = -batch.discounts * q1.mean()
-        return actor_loss, {'actor_loss': actor_loss} # Base actor loss
-
-    # Compute the original gradients
-    grads, info = jax.grad(actor_loss_fn, has_aux=True)(state.actor.params)
-
-    # --- Apply Gamma Correction ---
-    def _apply_gamma_correction(grads_and_state):
-        grads, state = grads_and_state # Unpack
-
-        # Get actions from the *current* policy (deterministic)
-        policy_actions = state.actor.apply_fn({'params': state.actor.params}, batch.observations)
-
-        # Get gamma values for policy actions from the *current* gamma critic
-        gamma1_pi, gamma2_pi = state.gamma_critic.apply_fn(
-            {'params': state.gamma_critic.params},
-            batch.observations,
-            policy_actions
-        )
-
-        # Get gamma values for batch actions from the *current* gamma critic
-        gamma1_batch, gamma2_batch = state.gamma_critic.apply_fn(
-            {'params': state.gamma_critic.params},
-            batch.observations,
-            batch.actions
-        )
-
-        # Compute average gamma values
-        gamma_pi = (gamma1_pi + gamma2_pi) / 2.0
-        gamma_batch = (gamma1_batch + gamma2_batch) / 2.0
-
-        # Compute correction term (gamma_pi - gamma_batch)
-        grad_correction = gamma_pi - gamma_batch # Shape: (batch_size, num_params)
-
-        # Average correction over the batch dimension
-        mean_grad_correction = jnp.mean(grad_correction, axis=0) # Shape: (num_params,)
-
-        # Flatten original gradients and apply correction
-        flat_grads, unravel_fn = jax.flatten_util.ravel_pytree(grads)
-
-        # Ensure correction has the same total size as flattened gradients
-        if flat_grads.size != mean_grad_correction.size:
-             raise ValueError(f"Flattened gradient size ({flat_grads.size}) != "
-                              f"Correction size ({mean_grad_correction.size})")
-
-        corrected_flat_grads = flat_grads + mean_grad_correction
-
-        # Unflatten corrected gradients back to the original pytree structure
-        corrected_grads = unravel_fn(corrected_flat_grads)
-
-        return corrected_grads
-
-    # Apply the correction to the gradients
-    # Pass the current state (which includes the up-to-date gamma_critic)
-    corrected_grads = _apply_gamma_correction((grads, state))
-
-    # --- Compute Gradient Similarity Metrics ---
-    flat_grads, _ = jax.flatten_util.ravel_pytree(grads)
-    flat_corrected_grads, _ = jax.flatten_util.ravel_pytree(corrected_grads)
-
-    norm_original = jnp.linalg.norm(flat_grads)
-    norm_corrected = jnp.linalg.norm(flat_corrected_grads)
-    dot_product = jnp.dot(flat_grads, flat_corrected_grads)
-
-    # Handle potential division by zero if norms are zero
-    cosine_similarity = jnp.where(
-        (norm_original > 1e-8) & (norm_corrected > 1e-8), # Add epsilon for numerical stability
-        dot_product / (norm_original * norm_corrected),
-        0.0 # Define similarity as 0 if either gradient is zero
-    )
-    cosine_distance = 1.0 - cosine_similarity
-
-    info['original_grad_norm'] = norm_original
-    info['corrected_grad_norm'] = norm_corrected
-    info['grad_cosine_similarity'] = cosine_similarity
-    info['grad_cosine_distance'] = cosine_distance
-    # --- End Gradient Similarity Metrics ---
-
-    # Update actor model with corrected gradients
-    new_actor = state.actor.apply_gradients(grads=corrected_grads)
-
-    # Add correction info if desired (optional)
-    # You might want to uncomment these lines if you log gamma_pi/gamma_batch means elsewhere
-    # gamma1_pi, gamma2_pi = state.gamma_critic.apply_fn({'params': state.gamma_critic.params}, batch.observations, state.actor.apply_fn({'params': state.actor.params}, batch.observations))
-    # gamma1_batch, gamma2_batch = state.gamma_critic.apply_fn({'params': state.gamma_critic.params}, batch.observations, batch.actions)
-    # gamma_pi_mean = ((gamma1_pi + gamma2_pi) / 2.0).mean()
-    # gamma_batch_mean = ((gamma1_batch + gamma2_batch) / 2.0).mean()
-    # info['gamma_pi_mean'] = gamma_pi_mean
-    # info['gamma_batch_mean'] = gamma_batch_mean
-    # correction_term = (gamma1_pi + gamma2_pi) / 2.0 - (gamma1_batch + gamma2_batch) / 2.0
-    # info['grad_correction_mean_norm'] = jnp.linalg.norm(jnp.mean(correction_term, axis=0))
-
-    return new_actor, info
+    """Updates the TD3 actor with gradient correction using composable system."""
+    return update_td3gc_actor(state, batch)
 
 
 # --- TD3-GC Update Step ---

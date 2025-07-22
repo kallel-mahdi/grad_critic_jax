@@ -15,8 +15,10 @@ from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
 from base_agent import RLAgent, RLAgentState, RLAgentConfig
 # Import networks
 from networks import  DoubleCritic, DeterministicActor
+# Import composable actor updates
+from actor_updates import update_td3_actor
 
-@struct.dataclass
+@struct.dataclass(kw_only=True)
 class TD3Config(RLAgentConfig):
     actor_lr: float
     critic_lr: float
@@ -84,25 +86,8 @@ def update_critic(key_critic: PRNGKey, state: TD3State, batch: Batch) -> Tuple[t
 
 # --- TD3 Actor Update ---
 def update_actor(state: TD3State, batch: Batch) -> Tuple[train_state.TrainState, InfoDict]:
-
-    def actor_loss_fn(actor_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        # Apply actor model to get actions
-        actions = state.actor.apply_fn({'params': actor_params}, batch.observations)
-
-        # Evaluate actions using *one* of the critic networks (typically the first one).
-        # The critic parameters used here are the *updated* ones from the critic step.
-        q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
-
-        # Actor loss: maximize Q-value of the generated actions.
-        actor_loss = -(batch.discounts * q1).mean()
-
-        return actor_loss, {'actor_loss': actor_loss}
-
-    # Compute gradients and update actor model
-    grads, info = jax.grad(actor_loss_fn, has_aux=True)(state.actor.params)
-    new_actor = state.actor.apply_gradients(grads=grads)
-
-    return new_actor, info
+    """TD3 actor update using composable system."""
+    return update_td3_actor(state, batch)
 
 
 # --- Target Network Update ---

@@ -44,11 +44,13 @@ from td3 import (
 )
 from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
 from networks import DoubleCritic, DeterministicActor
+# Import composable actor updates
+from actor_updates import update_td3bc_actor
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
-@struct.dataclass
+@struct.dataclass(kw_only=True)
 class TD3BCConfig(TD3Config):
     """Extends TD3Config with TD3BC-specific parameters."""
     # Provide defaults for all TD3Config fields to fix dataclass inheritance
@@ -227,41 +229,8 @@ def get_dataset(
 
 # --- TD3BC Actor Update (extends TD3 with BC loss) ---
 def update_actor_bc(state: TD3BCState, batch: Batch) -> Tuple[TrainState, InfoDict]:
-    """TD3 actor update extended with behavior cloning loss."""
-    
-    def actor_loss_fn(actor_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        # Get actions from actor (same as TD3)
-        actions = state.actor.apply_fn({'params': actor_params}, batch.observations)
-        
-        # Get Q-values from critic (same as TD3) 
-        q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
-        
-        # Standard TD3 actor loss
-        td3_loss = -q1.mean()
-        
-       
-        # Add TD3BC behavior cloning component
-        bc_loss = jnp.square(actions - batch.actions).mean()
-        
-        # Adaptive weighting (key TD3BC innovation)
-        mean_abs_q = jax.lax.stop_gradient(jnp.abs(q1).mean())
-        loss_lambda = state.config.alpha / mean_abs_q
-
-        # Combined loss: weighted TD3 loss + BC loss
-        actor_loss = td3_loss * loss_lambda + bc_loss
-        
-        return actor_loss, {
-            'actor_loss': actor_loss,
-            'td3_loss': td3_loss,
-            'bc_loss': bc_loss,
-            'loss_lambda': loss_lambda
-        }
-
-
-    # Use same gradient computation as TD3
-    grads, info = jax.grad(actor_loss_fn, has_aux=True)(state.actor.params)
-    new_actor = state.actor.apply_gradients(grads=grads)
-    return new_actor, info
+    """TD3 actor update extended with behavior cloning loss using composable system."""
+    return update_td3bc_actor(state, batch)
 
 
 # --- Batch Update Function (TD3BC's key feature) ---

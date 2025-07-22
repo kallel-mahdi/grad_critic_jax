@@ -1,4 +1,6 @@
 outputs/
-.venv/
+.venv*/
 __pycache__/
 .gitignore
+minari-*/
+wandb/
