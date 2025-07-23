@@ -12,7 +12,7 @@ from jax.tree_util import tree_map
 import jax.flatten_util # Added for gradient flattening/unflattening
 
 # Import networks
-from networks import  DoubleCritic, DeterministicActor
+from networks import  DoubleCritic, DeterministicActor,MLP
 
 # Import base TD3 components
 from td3 import (
@@ -24,7 +24,7 @@ from td3 import (
 )
 
 # Import common components from utils and base_agent
-from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+from utils import Batch, default_init, PRNGKey, Params, InfoDict
 # Import composable actor updates
 from actor_updates import update_td3gc_actor
 
@@ -51,10 +51,11 @@ class GammaCritic(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray]
     num_params: int  # Output size for gamma parameters
+    use_layer_norm: bool = False
 
     def setup(self):
         # Main network excluding final layer
-        self.feature_net = MLP(self.hidden_dims, activate_final=True)
+        self.feature_net = MLP(self.hidden_dims, activate_final=True,use_layer_norm=self.use_layer_norm)
         # Gamma parameter output head
         self.gamma_head = nn.Dense(self.num_params, kernel_init=default_init())
 
@@ -72,6 +73,7 @@ class DoubleGammaCritic(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     num_qs: int = 2
     num_params: int = None  # Output size for gamma parameters, set during init
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, states, actions):
@@ -284,7 +286,7 @@ def create_td3_gc_learner(
     )
 
     # Initialize Critic network and state (same as TD3)
-    critic_def = DoubleCritic(config.hidden_dims)
+    critic_def = DoubleCritic(config.hidden_dims,use_layer_norm=config.use_layer_norm)
     critic_params = critic_def.init(critic_key, observations, actions)['params']
     critic = train_state.TrainState.create(
         apply_fn=critic_def.apply,
@@ -299,7 +301,8 @@ def create_td3_gc_learner(
     # Ensure activations are passed if needed, default is relu
     gamma_critic_def = DoubleGammaCritic(
         hidden_dims=config.hidden_dims, # Use same hidden dims as critic? Or specify separately? Using same for now.
-        num_params=actor_param_count
+        num_params=actor_param_count,
+        use_layer_norm=config.use_layer_norm
     )
     gamma_critic_params = gamma_critic_def.init(gamma_critic_key, observations, actions)['params']
     gamma_critic = train_state.TrainState.create(

@@ -15,6 +15,7 @@ def td3_loss_fn(state, batch: Batch) -> Callable[[Params], Tuple[jnp.ndarray, In
         actions = state.actor.apply_fn({'params': actor_params}, batch.observations)
         q1, _ = state.critic.apply_fn({'params': state.critic.params}, batch.observations, actions)
         actor_loss = -(batch.discounts * q1).mean()
+        #actor_loss = -(batch.discounts * q1).sum()/ (batch.discounts.sum())
         return actor_loss, {'actor_loss': actor_loss}
     return loss_fn
 

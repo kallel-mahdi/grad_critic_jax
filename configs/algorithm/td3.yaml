@@ -10,3 +10,4 @@ policy_delay: 2     # TD3 specific: Frequency of delayed policy updates
 exploration_noise: 0.1  # TD3 specific: Stddev for Gaussian exploration noise added to actions
 max_action: 1.0
 final_fc_init_scale: 1.0  # Added for actor network initialization
+use_layer_norm: False

@@ -7,24 +7,30 @@ import distrax
 
 # def default_init(scale: Optional[float] = jnp.sqrt(2)):
 #     return nn.initializers.orthogonal(scale)
-
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False # Changed default to False for typical MLP usage
     dropout_rate: Optional[float] = None
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
         for i, size in enumerate(self.hidden_dims):
             #x = nn.Dense(size, kernel_init=default_init())(x)
             x = nn.Dense(size)(x)
+            
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 x = self.activations(x)
+              
                 if self.dropout_rate is not None:
                     x = nn.Dropout(rate=self.dropout_rate)(
                         x, deterministic=not training)
-        return x 
+                
+                if self.use_layer_norm:
+                    x = nn.LayerNorm()(x)
+                    
+        return x
     
 
 
@@ -35,12 +41,14 @@ class MLP(nn.Module):
 class Critic(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray,
                  actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
         critic = MLP((*self.hidden_dims, 1),
+                     use_layer_norm=self.use_layer_norm,
                      activations=self.activations)(inputs)
         return jnp.squeeze(critic, -1)
 
@@ -48,6 +56,7 @@ class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     num_qs: int = 2
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, states, actions):
@@ -59,6 +68,7 @@ class DoubleCritic(nn.Module):
                              out_axes=0,               # Stack outputs along the first axis
                              axis_size=self.num_qs)      # Number of critics to create
         qs = VmapCritic(self.hidden_dims,
+                        use_layer_norm=self.use_layer_norm,
                         activations=self.activations)(states, actions)
         return qs[0], qs[1] # Return the two Q-values separately
 
@@ -69,7 +79,7 @@ class DeterministicActor(nn.Module):
     action_dim: int
     max_action: float # Needed for TD3's action output clipping/scaling if not handled by scale/bias
     dropout_rate: float = None
-
+    use_layer_norm: bool = False
     @nn.compact
     def __call__(self, 
                  observations: jnp.ndarray,
@@ -81,10 +91,12 @@ class DeterministicActor(nn.Module):
         #         dropout_rate=self.dropout_rate)(observations,
         #                                       training=training)
         # action = nn.Dense(self.action_dim)(outputs) * self.max_action # Scale output to action range
-        x = nn.Dense(256)(observations)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
+        x = MLP(self.hidden_dims,
+                use_layer_norm=self.use_layer_norm,
+                activations=nn.relu,
+                activate_final=True,
+                dropout_rate=self.dropout_rate)(observations,
+                                               training=training)
         x = nn.Dense(self.action_dim)(x)
         action = nn.tanh(x)
         return action

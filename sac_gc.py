@@ -9,7 +9,7 @@ import optax
 import jax.flatten_util
 
 # Import networks
-from networks import  DoubleCritic, StochasticActor, Temperature
+from networks import  DoubleCritic, StochasticActor, Temperature,MLP
 
 # Import base SAC components
 from sac import (
@@ -22,7 +22,7 @@ from sac import (
 )
 
 # Import common utilities
-from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+from utils import Batch, default_init, PRNGKey, Params, InfoDict
 
 
 @struct.dataclass

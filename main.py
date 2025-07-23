@@ -138,6 +138,7 @@ def main(cfg: DictConfig):
         done = terminated or truncated
         mask = 1.0 - float(terminated)  # Mask is 1 if not terminated (for critic target)
         if cfg.training.discount_grad : discount *= cfg.algorithm.discount
+        
 
         # Store transition in replay buffer
         replay_buffer.add(observation, action, reward, mask, next_observation, discount)
@@ -148,10 +149,13 @@ def main(cfg: DictConfig):
         # Reset environment if episode ends
         if done:
             observation, _ = env.reset()
+            discount = 1.
             if cfg.logging.use_wandb and 'episode' in info:
                  wandb.log({'train/episode_return': info['episode']['r'][0],
                             'train/episode_length': info['episode']['l'][0]},
                             step=step_num, commit=False)
+                
+            
 
         # Perform agent update if enough steps have passed
         if step_num >= cfg.training.start_steps:
@@ -166,25 +170,17 @@ def main(cfg: DictConfig):
 
         # Evaluate agent periodically
         if step_num % cfg.training.eval_freq == 0:
-            eval_returns = []
-            eval_disc_returns = []
-            for _ in range(cfg.training.eval_episodes):
+          
                 
-                 agent, avg_reward, avg_disc_reward = evaluate(agent, eval_env, 1,discount)
-                 eval_returns.append(avg_reward)
-                 eval_disc_returns.append(avg_disc_reward)
+            agent, avg_reward, avg_disc_reward = evaluate(agent, eval_env, cfg.training.eval_episodes,cfg.algorithm.discount)
 
-
-            avg_eval_reward = np.mean(eval_returns)
-            avg_eval_disc_reward = np.mean(eval_disc_returns)
             # Log evaluation results to wandb
-            log_data = {"eval/avg_reward": avg_eval_reward, "eval/avg_disc_reward": avg_eval_disc_reward, "step": step_num}
+            log_data = {"eval/avg_reward": avg_reward, "eval/avg_disc_reward": avg_disc_reward, "step": step_num}
             if cfg.logging.use_wandb:
                 wandb.log(log_data,step=step_num, commit=True) # Commit updates here
           
-
             print(f"---------------------------------------")
-            print(f"Step: {step_num}, Evaluation Avg Reward: {avg_eval_reward:.2f}, Evaluation Avg Discounted Reward: {avg_eval_disc_reward:.2f}")
+            print(f"Step: {step_num}, Evaluation Avg Reward: {avg_reward:.2f}, Evaluation Avg Discounted Reward: {avg_disc_reward:.2f}")
             print(f"---------------------------------------")
 
     env.close()

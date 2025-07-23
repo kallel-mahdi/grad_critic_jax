@@ -11,7 +11,7 @@ from jax.tree_util import tree_map
 import distrax # Though not strictly needed for TD3 policy, keep for potential future distribution use
 
 # Import common components from utils and base_agent
-from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
+from utils import Batch, PRNGKey, Params, InfoDict
 from base_agent import RLAgent, RLAgentState, RLAgentConfig
 # Import networks
 from networks import  DoubleCritic, DeterministicActor
@@ -31,6 +31,7 @@ class TD3Config(RLAgentConfig):
     exploration_noise: float
     max_action: float
     final_fc_init_scale: float
+    use_layer_norm: bool
 
 @struct.dataclass
 class TD3State(RLAgentState): # Inherit from RLAgentState
@@ -181,7 +182,7 @@ def create_td3_learner(
 
     # Initialize Actor network and state
     actor_def = DeterministicActor(action_dim=action_dim, max_action=config.max_action,
-                                   hidden_dims=config.hidden_dims,)
+                                   hidden_dims=config.hidden_dims,use_layer_norm=config.use_layer_norm)
     actor_params = actor_def.init(actor_key, observations)['params']
     actor = train_state.TrainState.create(
         apply_fn=actor_def.apply,
@@ -190,12 +191,13 @@ def create_td3_learner(
     )
 
     # Initialize Critic network and state (DoubleCritic)
-    critic_def = DoubleCritic(config.hidden_dims)
+    critic_def = DoubleCritic(config.hidden_dims,use_layer_norm=config.use_layer_norm)
     # Use dummy actions with the correct dimension for initialization
     critic_params = critic_def.init(critic_key, observations, actions)['params']
     critic = train_state.TrainState.create(
         apply_fn=critic_def.apply,
         params=critic_params,
+        
         tx=optax.adam(learning_rate=config.critic_lr)
     )
 
