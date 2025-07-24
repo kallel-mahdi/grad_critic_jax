@@ -35,6 +35,7 @@ class TD3ConfigGC(TD3Config):
     # Inherits non-default fields from TD3Config
     gamma_critic_lr: float 
     target_gamma_critic_update_period: int 
+    share_critic_backbone: bool = False  # New option
 
 
 
@@ -52,18 +53,22 @@ class GammaCritic(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray]
     num_params: int  # Output size for gamma parameters
     use_layer_norm: bool = False
+    stop_backbone_grad: bool = False  # New flag
 
     def setup(self):
         # Main network excluding final layer
-        self.feature_net = MLP(self.hidden_dims, activate_final=True,use_layer_norm=self.use_layer_norm)
+        self.feature_net = MLP(self.hidden_dims, activate_final=True, use_layer_norm=self.use_layer_norm)
         # Gamma parameter output head
         self.gamma_head = nn.Dense(self.num_params, kernel_init=default_init())
 
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
         features = self.feature_net(inputs)
-        # Stop gradient flow from features
-        #features = jax.lax.stop_gradient(features)
+        
+        # Stop gradient flow from features if sharing backbone
+        if self.stop_backbone_grad:
+            features = jax.lax.stop_gradient(features)
+            
         # Output gamma parameters
         gamma_params = self.gamma_head(features)
         return gamma_params
@@ -74,6 +79,7 @@ class DoubleGammaCritic(nn.Module):
     num_qs: int = 2
     num_params: int = None  # Output size for gamma parameters, set during init
     use_layer_norm: bool = False
+    stop_backbone_grad: bool = False  # New flag
 
     @nn.compact
     def __call__(self, states, actions):
@@ -89,7 +95,8 @@ class DoubleGammaCritic(nn.Module):
         gamma_params = VmapGammaCritic(
             self.hidden_dims,
             activations=self.activations,
-            num_params=self.num_params # Pass num_params here
+            num_params=self.num_params,
+            stop_backbone_grad=self.stop_backbone_grad  # Pass the flag
         )(states, actions)
 
         return gamma_params[0], gamma_params[1]  # Return the two sets of gamma parameters
@@ -191,6 +198,17 @@ def _td3_gc_update_step(state: TD3StateGC, batch: Batch) -> Tuple[TD3StateGC, In
 
     # Create a temporary state containing the updated critic for subsequent updates
     temp_state = state.replace(critic=new_critic)
+
+    # --- Gamma Critic Update with Shared Backbone ---
+    if state.config.share_critic_backbone:
+        # Copy critic backbone to gamma critic before update
+        updated_gamma_params = copy_critic_backbone_to_gamma_critic(
+            new_critic.params, 
+            state.gamma_critic.params
+        )
+        # Update gamma critic state with copied backbone
+        temp_gamma_critic = state.gamma_critic.replace(params=updated_gamma_params)
+        temp_state = temp_state.replace(gamma_critic=temp_gamma_critic)
 
     # --- Gamma Critic Update ---
     # Update gamma critic using the updated value critic state
@@ -299,7 +317,8 @@ def create_td3_gc_learner(
     gamma_critic_def = DoubleGammaCritic(
         hidden_dims=config.hidden_dims, # Use same hidden dims as critic? Or specify separately? Using same for now.
         num_params=actor_param_count,
-        use_layer_norm=config.use_layer_norm
+        use_layer_norm=config.use_layer_norm,
+        stop_backbone_grad=config.share_critic_backbone  # Set flag
     )
     gamma_critic_params = gamma_critic_def.init(gamma_critic_key, observations, actions)['params']
     gamma_critic = train_state.TrainState.create(
@@ -358,3 +377,24 @@ class TD3AgentGC(TD3Agent): # Inherit from base TD3Agent
 
     # sample and sample_eval methods are inherited from TD3Agent and should work correctly
     # as they only depend on the actor state which has the same structure.
+
+def copy_critic_backbone_to_gamma_critic(critic_params: Params, gamma_critic_params: Params) -> Params:
+    """Copies critic backbone parameters to gamma critic backbone."""
+    from flax import traverse_util
+    
+    # Flatten both parameter trees
+    flat_critic = traverse_util.flatten_dict(critic_params, sep='/')
+    flat_gamma = traverse_util.flatten_dict(gamma_critic_params, sep='/')
+    
+    # Copy feature_net parameters from critic to gamma critic
+    # DoubleCritic structure: params -> [critic0, critic1] -> feature_net
+    # DoubleGammaCritic structure: params -> [gamma0, gamma1] -> feature_net
+    
+    for key in flat_gamma:
+        if 'feature_net' in key:
+            # Direct copy from corresponding critic feature_net
+            if key in flat_critic:
+                flat_gamma[key] = flat_critic[key]  # Just copy, don't freeze
+    
+    # Unflatten (no need to freeze)
+    return traverse_util.unflatten_dict(flat_gamma, sep='/')

@@ -20,8 +20,8 @@ class MLP(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
         for i, size in enumerate(self.hidden_dims):
-            #x = nn.Dense(size, kernel_init=default_init())(x)
-            x = nn.Dense(size,kernel_init=default_init())(x)
+            x = nn.Dense(size, kernel_init=default_init())(x)
+            #x = nn.Dense(size,kernel_init=default_init())(x)
             #x = nn.Dense(size)(x)
             
             if i + 1 < len(self.hidden_dims) or self.activate_final:
@@ -47,16 +47,14 @@ class Critic(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     use_layer_norm: bool = False
     
-    @nn.compact
-    def setup(self):
+    def setup(self):  # Remove @nn.compact from setup()
         # Main network excluding final layer
-        self.feature_net = MLP(self.hidden_dims, activate_final=True,use_layer_norm=self.use_layer_norm)
-        # Gamma parameter output head
+        self.feature_net = MLP(self.hidden_dims, activate_final=True, use_layer_norm=self.use_layer_norm)
+        # Critic output head
         self.critic_head = nn.Dense(1, kernel_init=default_init())
 
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray,
-                 actions: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
+        # Remove @nn.compact from __call__() when using setup()
         inputs = jnp.concatenate([observations, actions], -1)
         features = self.feature_net(inputs)
         critic = self.critic_head(features)

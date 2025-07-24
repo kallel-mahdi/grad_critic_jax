@@ -200,24 +200,24 @@ def train_fresh_critic(
     # Create a deep copy of the agent state to avoid modifying the original
     temp_state = copy.deepcopy(agent_state)
     
-    # Initialize fresh critic with same architecture as original
-    critic_def = DoubleCritic(temp_state.config.hidden_dims, use_layer_norm=temp_state.config.use_layer_norm)
-    sample_obs = jnp.expand_dims(observations[0], 0)
-    sample_act = jnp.expand_dims(actions[0], 0)
-    critic_params = critic_def.init(critic_key, sample_obs, sample_act)['params']
+    # # Initialize fresh critic with same architecture as original
+    # critic_def = DoubleCritic(temp_state.config.hidden_dims, use_layer_norm=temp_state.config.use_layer_norm)
+    # sample_obs = jnp.expand_dims(observations[0], 0)
+    # sample_act = jnp.expand_dims(actions[0], 0)
+    # critic_params = critic_def.init(critic_key, sample_obs, sample_act)['params']
     
-    fresh_critic = train_state.TrainState.create(
-        apply_fn=critic_def.apply,
-        params=critic_params,
-        tx=optax.adam(learning_rate=temp_state.config.critic_lr)
-    )
+    # fresh_critic = train_state.TrainState.create(
+    #     apply_fn=critic_def.apply,
+    #     params=critic_params,
+    #     tx=optax.adam(learning_rate=temp_state.config.critic_lr)
+    # )
     
-    # Replace the critic in temp_state with fresh critic
-    temp_state = temp_state.replace(
-        critic=fresh_critic,
-        target_critic_params=critic_params,  # Fresh target params too
-        rng=rng
-    )
+    # # Replace the critic in temp_state with fresh critic
+    # temp_state = temp_state.replace(
+    #     critic=fresh_critic,
+    #     target_critic_params=critic_params,  # Fresh target params too
+    #     rng=rng
+    # )
     
     # Convert data to JAX arrays
     observations = jax.device_put(observations)
@@ -393,8 +393,9 @@ def evaluate_gradient_quality(
     
     # 1. Collect fresh rollouts using current policy
     print("Collecting fresh rollouts...")
+    #WARNING: Deterministic is False for but it should be TRUE
     rollout_obs, rollout_acts, rollout_rews, rollout_next_obs, rollout_masks, rollout_discounts = collect_rollouts(
-        agent, env, num_steps=rollout_steps, deterministic=True, num_parallel_envs=num_parallel_envs, gamma=0.99
+        agent, env, num_steps=rollout_steps, deterministic=False, num_parallel_envs=num_parallel_envs, gamma=0.99
     )
     
     # 2. Train fresh critic on rollout data using existing infrastructure

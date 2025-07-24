@@ -163,7 +163,7 @@ def main(cfg: DictConfig):
                 batch = replay_buffer.sample(cfg.training.batch_size)
                 agent, update_info = agent.update(batch)
                 
-                if step_num % 5000 == 0 :
+                if step_num % 20000 == 0 :
                     evaluate_gradient_quality(agent, env, replay_buffer, step_num)
 
             if cfg.logging.use_wandb and update_info:
