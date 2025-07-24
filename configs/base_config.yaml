@@ -1,6 +1,6 @@
 # Main configuration file
 defaults:
-  - environment: mujoco/Ant-v4 # Specify the default env file directly here
+  - environment: mujoco/Ant-v5 # Specify the default env file directly here
   - algorithm: sac
   - _self_
 
