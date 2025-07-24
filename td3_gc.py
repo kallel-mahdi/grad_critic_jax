@@ -12,7 +12,7 @@ from jax.tree_util import tree_map
 import jax.flatten_util # Added for gradient flattening/unflattening
 
 # Import networks
-from networks import  DoubleCritic, DeterministicActor,MLP
+from networks import  DoubleCritic, DeterministicActor,MLP,default_init
 
 # Import base TD3 components
 from td3 import (
@@ -24,7 +24,7 @@ from td3 import (
 )
 
 # Import common components from utils and base_agent
-from utils import Batch, default_init, PRNGKey, Params, InfoDict
+from utils import Batch, PRNGKey, Params, InfoDict
 # Import composable actor updates
 from actor_updates import update_td3gc_actor
 
@@ -130,10 +130,7 @@ def update_gamma_critic(key_gamma: PRNGKey, state: TD3StateGC, batch: Batch) -> 
 
     # 3. Get next actions from the *target* actor (deterministic, no noise needed here)
     next_actions = state.actor.apply_fn({'params': state.target_actor_params}, batch.next_observations)
-    # Clip next actions? TD3 usually does this *after* adding noise for the Q-target,
-    # but for consistency with the gamma target in SAC-GC, let's use the unclipped target action here.
-    # If issues arise, consider clipping: next_actions = next_actions.clip(-state.config.max_action, state.config.max_action)
-
+   
 
     # 4. Get gamma values for the next state-action pairs from the *target* gamma critic
     gamma1_next, gamma2_next = state.gamma_critic.apply_fn(

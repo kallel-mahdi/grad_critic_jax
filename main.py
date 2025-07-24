@@ -9,12 +9,14 @@ from sac_gc import SACAgentGC
 from td3 import TD3Agent
 from td3_gc import TD3AgentGC
 
+from cosine_distance import evaluate_gradient_quality
 from utils import ReplayBuffer, evaluate
 
 import wandb
 import jax
 import jax.numpy as jnp
 
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ["WANDB_API_KEY"] = "28996bd59f1ba2c5a8c3f2cc23d8673c327ae230"
 # os.environ["HTTPS_PROXY"] = "http://proxy:80"
 # os.environ["WANDB__SERVICE_WAIT"] = "300"
@@ -160,6 +162,9 @@ def main(cfg: DictConfig):
 
                 batch = replay_buffer.sample(cfg.training.batch_size)
                 agent, update_info = agent.update(batch)
+                
+                if step_num % 5000 == 0 :
+                    evaluate_gradient_quality(agent, env, replay_buffer, step_num)
 
             if cfg.logging.use_wandb and update_info:
                 wandb.log({f'train/{k}': v for k, v in update_info.items()},step=step_num, commit=False)

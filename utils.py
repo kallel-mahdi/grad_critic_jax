@@ -81,8 +81,6 @@ class ReplayBuffer:
 
 # --- Common Network Utilities ---
 
-def default_init(scale: Optional[float] = jnp.sqrt(2)):
-    return nn.initializers.orthogonal(scale)
 
 # class MLP(nn.Module):
 #     hidden_dims: Sequence[int]

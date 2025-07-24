@@ -22,6 +22,7 @@ class MLP(nn.Module):
         for i, size in enumerate(self.hidden_dims):
             #x = nn.Dense(size, kernel_init=default_init())(x)
             x = nn.Dense(size,kernel_init=default_init())(x)
+            #x = nn.Dense(size)(x)
             
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 if self.use_layer_norm:
@@ -32,9 +33,7 @@ class MLP(nn.Module):
                 if self.dropout_rate is not None:
                     x = nn.Dropout(rate=self.dropout_rate)(
                         x, deterministic=not training)
-                
-              
-                    
+                      
         return x
     
 
@@ -47,15 +46,20 @@ class Critic(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     use_layer_norm: bool = False
+    
+    @nn.compact
+    def setup(self):
+        # Main network excluding final layer
+        self.feature_net = MLP(self.hidden_dims, activate_final=True,use_layer_norm=self.use_layer_norm)
+        # Gamma parameter output head
+        self.critic_head = nn.Dense(1, kernel_init=default_init())
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray,
                  actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1),
-                     use_layer_norm=self.use_layer_norm,
-                     activate_final=False,
-                     activations=self.activations)(inputs)
+        features = self.feature_net(inputs)
+        critic = self.critic_head(features)
         return jnp.squeeze(critic, -1)
 
 class DoubleCritic(nn.Module):
@@ -107,7 +111,6 @@ class StochasticActor(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     max_action: float
-    final_fc_init_scale: float
     log_std_min: float  
     log_std_max: float    
     dropout_rate: float = None
@@ -127,12 +130,10 @@ class StochasticActor(nn.Module):
                                                       training=training)
 
         means = nn.Dense(self.action_dim,
-                         #kernel_init=default_init(self.final_fc_init_scale)
                          )(outputs)
      
     
         log_stds = nn.Dense(self.action_dim,
-                            #kernel_init=default_init(self.final_fc_init_scale)
                             )(outputs)
 
 

@@ -30,7 +30,6 @@ class TD3Config(RLAgentConfig):
     policy_delay: int
     exploration_noise: float
     max_action: float
-    final_fc_init_scale: float
     use_layer_norm: bool
 
 @struct.dataclass

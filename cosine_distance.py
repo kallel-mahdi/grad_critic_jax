@@ -1,12 +1,13 @@
 # cosine_distance.py
 from typing import Tuple, Dict, Any
+import copy
 import jax
 import jax.numpy as jnp
 import numpy as np
 import gymnasium as gym
 import wandb
 from tqdm import tqdm
-
+from functools import partial
 from td3_gc import TD3AgentGC, TD3StateGC, create_td3_gc_learner, TD3ConfigGC
 from td3 import update_critic as base_update_critic
 from networks import DoubleCritic
@@ -16,14 +17,20 @@ import flax.linen as nn
 from flax.training import train_state
 import optax
 import jax.flatten_util
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
+jit_update_critic = jax.jit(base_update_critic)
+
+#TODO: Add discount
 
 def collect_rollouts(
     agent: TD3AgentGC,
     env: gym.Env,
     num_steps: int = 100_000,
     deterministic: bool = True,
-    num_parallel_envs: int = 8
+    num_parallel_envs: int = 8,
+    gamma: float = 0.99,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Collect rollouts using the current policy for training true gradient critic.
@@ -46,7 +53,13 @@ def collect_rollouts(
     
     env_id = env.spec.id
     
-    vec_env = gym.vector.make(env_id, num_envs=num_parallel_envs, asynchronous=True)
+    vec_env = gym.make_vec(
+    env_id,
+    num_envs=num_parallel_envs,
+    # vectorization_mode="async",
+    # vector_kwargs={"context": "spawn"} 
+    vectorization_mode="sync"
+    )
     print(f"Created vectorized environment with {num_parallel_envs} parallel environments")
 
     
@@ -56,7 +69,7 @@ def collect_rollouts(
     rewards = []
     next_observations = []
     masks = []
-    
+    discounts = []
     # Reset all environments
     obs, _ = vec_env.reset()
     steps_collected = 0
@@ -66,6 +79,8 @@ def collect_rollouts(
     total_steps_needed = steps_per_env * num_parallel_envs
     
     progress_bar = tqdm(total=total_steps_needed, desc="Collecting parallel rollouts")
+    
+    discount = jnp.ones(num_parallel_envs)
     
     while steps_collected < total_steps_needed:
         # obs is shape (num_envs, obs_dim)
@@ -82,38 +97,89 @@ def collect_rollouts(
         done = terminated | truncated  # Element-wise OR for boolean arrays
         mask = 1.0 - terminated.astype(np.float32)  # Only terminated, not truncated
         
+        
+        
+        
         # Store transitions for all environments
         observations.append(obs.copy())
         actions.append(action.copy())
         rewards.append(reward.copy())
         next_observations.append(next_obs.copy())
         masks.append(mask.copy())
+        discounts.append(discount.copy())
+        
+        discount = discount * gamma
+        
+        if any(done): discount.at[done==True].set(1.)
         
         obs = next_obs
         steps_collected += num_parallel_envs
         progress_bar.update(num_parallel_envs)
+
+    progress_bar.close()
+    vec_env.close()
+        
+    # Flatten the collected data
+    # Each list element has shape (num_envs, ...), so we need to reshape
+    observations = np.concatenate(observations, axis=0)  # (total_steps, obs_dim)
+    actions = np.concatenate(actions, axis=0)  # (total_steps, action_dim)
+    rewards = np.concatenate(rewards, axis=0)  # (total_steps,)
+    next_observations = np.concatenate(next_observations, axis=0)  # (total_steps, obs_dim)
+    masks = np.concatenate(masks, axis=0)  # (total_steps,)
+    discounts = np.concatenate(discounts, axis=0)  # (total_steps,)
+    print(f"Collected {observations.shape[0]} transitions using {num_parallel_envs} parallel environments")
     
-        progress_bar.close()
-        vec_env.close()
-        
-        # Flatten the collected data
-        # Each list element has shape (num_envs, ...), so we need to reshape
-        observations = np.concatenate(observations, axis=0)  # (total_steps, obs_dim)
-        actions = np.concatenate(actions, axis=0)  # (total_steps, action_dim)
-        rewards = np.concatenate(rewards, axis=0)  # (total_steps,)
-        next_observations = np.concatenate(next_observations, axis=0)  # (total_steps, obs_dim)
-        masks = np.concatenate(masks, axis=0)  # (total_steps,)
-        
-        print(f"Collected {observations.shape[0]} transitions using {num_parallel_envs} parallel environments")
-        
-        return (
-            observations.astype(np.float32),
-            actions.astype(np.float32),
-            rewards.astype(np.float32),
-            next_observations.astype(np.float32),
-            masks.astype(np.float32)
-        )
+    return (
+        observations.astype(np.float32),
+        actions.astype(np.float32),
+        rewards.astype(np.float32),
+        next_observations.astype(np.float32),
+        masks.astype(np.float32),
+        discounts.astype(np.float32)
+    )
     
+
+#@jax.jit
+def _fresh_critic_update_step(
+    temp_state: TD3StateGC,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    rewards: jnp.ndarray,
+    next_observations: jnp.ndarray,
+    masks: jnp.ndarray,
+    rng: PRNGKey,
+    batch_size: int,
+    dataset_size: int
+) -> Tuple[TD3StateGC, PRNGKey]:
+    """
+    JIT-compiled single training step for fresh critic using existing td3.py logic.
+    """
+    rng, batch_rng, noise_rng = jax.random.split(rng, 3)
+    
+    # Sample batch
+    batch_idx = jax.random.randint(batch_rng, (batch_size,), 0, dataset_size)
+    batch_obs = observations[batch_idx]
+    batch_act = actions[batch_idx]
+    batch_rew = rewards[batch_idx]
+    batch_next_obs = next_observations[batch_idx]
+    batch_masks = masks[batch_idx]
+    
+    # Create batch object
+    batch = Batch(
+        observations=batch_obs,
+        actions=batch_act,
+        rewards=batch_rew,
+        next_observations=batch_next_obs,
+        masks=batch_masks,
+        discounts=jnp.ones_like(batch_rew)  # Not used in critic update
+    )
+    
+    # Update critic using existing td3.py logic
+    new_critic, _ = jit_update_critic(noise_rng, temp_state, batch)
+    new_temp_state = temp_state.replace(critic=new_critic, rng=rng)
+    
+    return new_temp_state, rng
+
 
 def train_fresh_critic(
     observations: jnp.ndarray,
@@ -121,39 +187,36 @@ def train_fresh_critic(
     rewards: jnp.ndarray,
     next_observations: jnp.ndarray,
     masks: jnp.ndarray,
-    actor_params: Params,
-    actor_apply_fn: Any,
-    config: TD3ConfigGC,
+    agent_state: TD3StateGC,
     seed: int = 42,
     num_training_steps: int = 50_000
 ) -> train_state.TrainState:
     """
-    Train a fresh critic from scratch on rollout data.
-    
-    Args:
-        observations, actions, rewards, next_observations, masks: Rollout data
-        actor_params: Current actor parameters for target Q computation
-        actor_apply_fn: Actor apply function
-        config: TD3-GC configuration
-        seed: Random seed for critic initialization
-        num_training_steps: Number of training steps for the critic
-        
-    Returns:
-        Trained critic TrainState
+    Train a fresh critic from scratch using existing td3.py infrastructure.
     """
     rng = jax.random.PRNGKey(seed)
     rng, critic_key = jax.random.split(rng)
     
-    # Initialize fresh critic with same architecture as current critic
-    critic_def = DoubleCritic(config.hidden_dims, use_layer_norm=config.use_layer_norm)
+    # Create a deep copy of the agent state to avoid modifying the original
+    temp_state = copy.deepcopy(agent_state)
+    
+    # Initialize fresh critic with same architecture as original
+    critic_def = DoubleCritic(temp_state.config.hidden_dims, use_layer_norm=temp_state.config.use_layer_norm)
     sample_obs = jnp.expand_dims(observations[0], 0)
     sample_act = jnp.expand_dims(actions[0], 0)
     critic_params = critic_def.init(critic_key, sample_obs, sample_act)['params']
     
-    critic = train_state.TrainState.create(
+    fresh_critic = train_state.TrainState.create(
         apply_fn=critic_def.apply,
         params=critic_params,
-        tx=optax.adam(learning_rate=config.critic_lr)
+        tx=optax.adam(learning_rate=temp_state.config.critic_lr)
+    )
+    
+    # Replace the critic in temp_state with fresh critic
+    temp_state = temp_state.replace(
+        critic=fresh_critic,
+        target_critic_params=critic_params,  # Fresh target params too
+        rng=rng
     )
     
     # Convert data to JAX arrays
@@ -163,48 +226,28 @@ def train_fresh_critic(
     next_observations = jax.device_put(next_observations)
     masks = jax.device_put(masks)
     
-    # Training loop for critic
+    # Training parameters
     dataset_size = observations.shape[0]
-    batch_size = min(256, dataset_size // 10)  # Use reasonable batch size
+    batch_size = min(256, dataset_size // 10)
     
-    for step in tqdm(range(num_training_steps), desc="Training fresh critic"):
-        rng, batch_rng, noise_rng = jax.random.split(rng, 3)
-        
-        # Sample batch
-        batch_idx = jax.random.randint(batch_rng, (batch_size,), 0, dataset_size)
-        batch_obs = observations[batch_idx]
-        batch_act = actions[batch_idx]
-        batch_rew = rewards[batch_idx]
-        batch_next_obs = next_observations[batch_idx]
-        batch_masks = masks[batch_idx]
-        
-        # Compute target using current actor (deterministic)
-        next_actions = actor_apply_fn({'params': actor_params}, batch_next_obs)
-        
-        # Add target policy smoothing noise (like TD3)
-        noise = (jax.random.normal(noise_rng, next_actions.shape) * config.policy_noise
-                ).clip(-config.noise_clip, config.noise_clip)
-        next_actions = (next_actions + noise).clip(-config.max_action, config.max_action)
-        
-        # Compute target Q-values using current critic
-        next_q1, next_q2 = critic.apply_fn({'params': critic.params}, batch_next_obs, next_actions)
-        next_q = jnp.minimum(next_q1, next_q2)
-        
-        # Bellman target
-        target_q = batch_rew + config.discount * batch_masks * next_q
-        target_q = jax.lax.stop_gradient(target_q)
-        
-        # Critic loss function
-        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
-            q1, q2 = critic.apply_fn({'params': critic_params}, batch_obs, batch_act)
-            critic_loss = ((q1 - target_q)**2 + (q2 - target_q)**2).mean()
-            return critic_loss
-        
-        # Update critic
-        grads = jax.grad(critic_loss_fn)(critic.params)
-        critic = critic.apply_gradients(grads=grads)
+    print(f"Training fresh critic with JIT compilation for {num_training_steps} steps...")
     
-    return critic
+    # Training loop - JIT compiled step function
+    for step in tqdm(range(num_training_steps), desc="Training fresh critic (JIT)"):
+        temp_state, rng = _fresh_critic_update_step(
+            temp_state,
+            observations,
+            actions,
+            rewards,
+            next_observations,
+            masks,
+            rng,
+            batch_size,
+            dataset_size
+        )
+    
+    print("Fresh critic training completed!")
+    return temp_state.critic
 
 
 def compute_actor_gradient(
@@ -306,15 +349,15 @@ def compute_true_gradient(
     return flat_grads
 
 
-def compute_cosine_distance(grad1: jnp.ndarray, grad2: jnp.ndarray) -> float:
+def compute_cosine_similarity(grad1: jnp.ndarray, grad2: jnp.ndarray) -> float:
     """
-    Compute cosine distance between two flattened gradients.
+    Compute cosine similarity between two flattened gradients.
     
     Args:
         grad1, grad2: Flattened gradient vectors
         
     Returns:
-        Cosine distance (1 - cosine similarity)
+        Cosine similarity (-1 to 1, where 1 means perfect alignment)
     """
     # Compute norms
     norm1 = jnp.linalg.norm(grad1)
@@ -322,16 +365,13 @@ def compute_cosine_distance(grad1: jnp.ndarray, grad2: jnp.ndarray) -> float:
     
     # Handle zero gradients
     if norm1 < 1e-8 or norm2 < 1e-8:
-        return 1.0  # Maximum distance for zero gradients
+        return 0.0  # No similarity for zero gradients
     
     # Compute cosine similarity
     dot_product = jnp.dot(grad1, grad2)
     cosine_similarity = dot_product / (norm1 * norm2)
     
-    # Compute cosine distance
-    cosine_distance = 1.0 - cosine_similarity
-    
-    return float(cosine_distance)
+    return float(cosine_similarity)
 
 
 def evaluate_gradient_quality(
@@ -341,40 +381,27 @@ def evaluate_gradient_quality(
     step_num: int,
     batch_size: int = 256,
     rollout_steps: int = 50_000,
-    critic_training_steps: int = 50_000,
-    evaluation_batch_size: int = 1000,
-    num_parallel_envs: int = 8
+    critic_training_steps: int = 5_000,
+    evaluation_batch_size: int = 5000,
+    num_parallel_envs: int = 10
 ) -> Dict[str, float]:
     """
     Main function to evaluate gradient quality by comparing with true gradient.
-    
-    Args:
-        agent: Current TD3-GC agent
-        env: Environment for rollouts (used to create vectorized environments)
-        replay_buffer: Current replay buffer for off-policy data
-        step_num: Current training step number
-        batch_size: Batch size for gradient computation
-        rollout_steps: Number of steps to rollout for true gradient
-        critic_training_steps: Number of steps to train fresh critic
-        evaluation_batch_size: Batch size for final gradient comparison
-        num_parallel_envs: Number of parallel environments for faster rollouts
-        
-    Returns:
-        Dictionary with cosine distance metrics
+    Now uses copy.deepcopy and existing td3.py infrastructure.
     """
     print(f"\n=== Gradient Quality Evaluation at Step {step_num} ===")
     
     # 1. Collect fresh rollouts using current policy
     print("Collecting fresh rollouts...")
-    rollout_obs, rollout_acts, rollout_rews, rollout_next_obs, rollout_masks = collect_rollouts(
-        agent, env, num_steps=rollout_steps, deterministic=True, num_parallel_envs=num_parallel_envs
+    rollout_obs, rollout_acts, rollout_rews, rollout_next_obs, rollout_masks, rollout_discounts = collect_rollouts(
+        agent, env, num_steps=rollout_steps, deterministic=True, num_parallel_envs=num_parallel_envs, gamma=0.99
     )
     
-    # 2. Train fresh critic on rollout data
+    # 2. Train fresh critic on rollout data using existing infrastructure
     print("Training fresh critic...")
     true_critic = train_fresh_critic(
         rollout_obs, rollout_acts, rollout_rews, rollout_next_obs, rollout_masks,
-        agent.state.actor.params, agent.state.actor.apply_fn, agent.state.config,
+        agent.state,  # Pass the full agent state
         seed=step_num, num_training_steps=critic_training_steps
     )
     
@@ -391,7 +418,7 @@ def evaluate_gradient_quality(
         rewards=jax.device_put(rollout_rews[eval_indices]),
         next_observations=jax.device_put(rollout_next_obs[eval_indices]),
         masks=jax.device_put(rollout_masks[eval_indices]),
-        discounts=jnp.ones(evaluation_batch_size)  # Not used in actor loss
+        discounts=jax.device_put(rollout_discounts[eval_indices])  # Not used in actor loss
     )
     
     # 4. Compute gradients
@@ -403,39 +430,57 @@ def evaluate_gradient_quality(
     # Corrected gradient (TD3-GC correction on replay buffer data)
     corrected_grad = compute_corrected_gradient(agent.state, off_policy_batch)
     
+
+    
     # True gradient (using fresh rollout data and fresh critic)
     true_grad = compute_true_gradient(agent.state, true_critic, true_batch)
     
-    # 5. Compute cosine distances
-    print("Computing cosine distances...")
+    # True approximation gradient (using fresh rollout data but current critic)
+    true_approx_grad = compute_true_gradient(agent.state, agent.state.critic, true_batch)
     
-    cosine_off_policy_vs_true = compute_cosine_distance(off_policy_grad, true_grad)
-    cosine_corrected_vs_true = compute_cosine_distance(corrected_grad, true_grad)
-    cosine_off_policy_vs_corrected = compute_cosine_distance(off_policy_grad, corrected_grad)
+    # 5. Compute cosine similarities
+    print("Computing cosine similarities...")
+    
+    cosine_off_policy_vs_true = compute_cosine_similarity(off_policy_grad, true_grad)
+    cosine_corrected_vs_true = compute_cosine_similarity(corrected_grad, true_grad)
+    cosine_off_policy_vs_corrected = compute_cosine_similarity(off_policy_grad, corrected_grad)
+    cosine_true_approx_vs_true = compute_cosine_similarity(true_approx_grad, true_grad)
     
     # 6. Compute gradient norms for additional insight
     norm_off_policy = float(jnp.linalg.norm(off_policy_grad))
     norm_corrected = float(jnp.linalg.norm(corrected_grad))
     norm_true = float(jnp.linalg.norm(true_grad))
+    norm_true_approx = float(jnp.linalg.norm(true_approx_grad))
     
     # 7. Create results dictionary
     results = {
-        'cosine_distance/off_policy_vs_true': cosine_off_policy_vs_true,
-        'cosine_distance/corrected_vs_true': cosine_corrected_vs_true,
-        'cosine_distance/off_policy_vs_corrected': cosine_off_policy_vs_corrected,
-        'gradient_norms/off_policy': norm_off_policy,
-        'gradient_norms/corrected': norm_corrected,
-        'gradient_norms/true': norm_true,
-        'gradient_improvement': cosine_off_policy_vs_true - cosine_corrected_vs_true,  # Positive means correction helps
+        'cosine_similarity/off_policy_vs_true': cosine_off_policy_vs_true,
+        'cosine_similarity/corrected_vs_true': cosine_corrected_vs_true,
+        'cosine_similarity/off_policy_vs_corrected': cosine_off_policy_vs_corrected,
+        'cosine_similarity/true_approx_vs_true': cosine_true_approx_vs_true,
+        'gradient_improvement': cosine_corrected_vs_true - cosine_off_policy_vs_true,  # Positive means correction helps
         'step': step_num
     }
     
     # 8. Log results
-    print(f"Off-policy vs True Cosine Distance: {cosine_off_policy_vs_true:.4f}")
-    print(f"Corrected vs True Cosine Distance: {cosine_corrected_vs_true:.4f}")
-    print(f"Off-policy vs Corrected Cosine Distance: {cosine_off_policy_vs_corrected:.4f}")
+    print(f"Off-policy vs True Cosine Similarity: {cosine_off_policy_vs_true:.4f}")
+    print(f"Corrected vs True Cosine Similarity: {cosine_corrected_vs_true:.4f}")
+    print(f"Off-policy vs Corrected Cosine Similarity: {cosine_off_policy_vs_corrected:.4f}")
+    print(f"True Approx vs True Cosine Similarity: {cosine_true_approx_vs_true:.4f}")
     print(f"Gradient Improvement: {results['gradient_improvement']:.4f}")
-    print(f"Gradient Norms - Off-policy: {norm_off_policy:.4f}, Corrected: {norm_corrected:.4f}, True: {norm_true:.4f}")
+    print(f"Gradient Norms - Off-policy: {norm_off_policy:.4f}, Corrected: {norm_corrected:.4f}, True: {norm_true:.4f}, True Approx: {norm_true_approx:.4f}")
+    
+    # Interpret results
+    print("\nResult Interpretation:")
+    print("-" * 40)
+    if results['gradient_improvement'] > 0:
+        print(f"✅ Gradient correction is helping! Improvement: {results['gradient_improvement']:.6f}")
+    else:
+        print(f"❌ Gradient correction may not be helping. Change: {results['gradient_improvement']:.6f}")
+    
+    print(f"Off-policy gradient has {cosine_off_policy_vs_true:.6f} cosine similarity with true gradient")
+    print(f"Corrected gradient has {cosine_corrected_vs_true:.6f} cosine similarity with true gradient")
+    print(f"True approx gradient has {cosine_true_approx_vs_true:.6f} cosine similarity with true gradient")
     
     # Log to wandb if available
     try:
@@ -449,34 +494,3 @@ def evaluate_gradient_quality(
     return results
 
 
-# Convenience function to integrate into main training loop
-def maybe_evaluate_gradient_quality(
-    agent: TD3AgentGC,
-    env: gym.Env,
-    replay_buffer: ReplayBuffer,
-    step_num: int,
-    evaluation_frequency: int = 50_000,
-    num_parallel_envs: int = 8,
-    **kwargs
-) -> Dict[str, float]:
-    """
-    Conditionally evaluate gradient quality every evaluation_frequency steps.
-    
-    Args:
-        agent: Current TD3-GC agent
-        env: Environment for rollouts (used to create vectorized environments)
-        replay_buffer: Current replay buffer
-        step_num: Current training step
-        evaluation_frequency: How often to evaluate (default: 50K steps)
-        num_parallel_envs: Number of parallel environments for faster rollouts
-        **kwargs: Additional arguments passed to evaluate_gradient_quality
-        
-    Returns:
-        Dictionary with results if evaluation performed, empty dict otherwise
-    """
-    if step_num % evaluation_frequency == 0 and step_num > 0:
-        return evaluate_gradient_quality(
-            agent, env, replay_buffer, step_num, num_parallel_envs=num_parallel_envs, **kwargs
-        )
-    else:
-        return {}

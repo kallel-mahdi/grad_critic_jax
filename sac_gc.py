@@ -9,7 +9,7 @@ import optax
 import jax.flatten_util
 
 # Import networks
-from networks import  DoubleCritic, StochasticActor, Temperature,MLP
+from networks import  DoubleCritic, StochasticActor, Temperature,MLP,default_init
 
 # Import base SAC components
 from sac import (
@@ -22,7 +22,7 @@ from sac import (
 )
 
 # Import common utilities
-from utils import Batch, default_init, PRNGKey, Params, InfoDict
+from utils import Batch, PRNGKey, Params, InfoDict
 
 
 @struct.dataclass
@@ -48,9 +48,9 @@ class GammaCritic(nn.Module):
 
     def setup(self):
         # Main network excluding final layer
-        self.feature_net = MLP(self.hidden_dims, activations=self.activations, activate_final=True)
+        self.feature_net = MLP(self.hidden_dims, activations=self.activations,kernel_init=default_init(), activate_final=True)
         # Gamma parameter output head
-        self.gamma_head = nn.Dense(self.num_params, kernel_init=default_init())
+        self.gamma_head = nn.Dense(self.num_params)
     
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
