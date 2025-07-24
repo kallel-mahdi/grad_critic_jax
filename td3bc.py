@@ -13,25 +13,20 @@ assert env.spec == eval_env.spec
 # Usage example:
 #   python td3bc.py dataset_name=D4RL/hopper/medium-expert-v2
 import os
-import time
 from functools import partial
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, NamedTuple, Sequence, Tuple
 
-import distrax
-import flax
-import flax.linen as nn
+
 import gymnasium as gym
 import jax
 import jax.numpy as jnp
 import minari
 import numpy as np
-import optax
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
-from pydantic import BaseModel
 from flax import struct
+from flax.training.train_state import TrainState
 
 # Import reusable components from TD3
 from td3 import (
@@ -42,8 +37,7 @@ from td3 import (
     create_td3_learner,     # Factory function for initialization
     _td3_sample_eval_step   # Evaluation sampling
 )
-from utils import Batch, MLP, default_init, PRNGKey, Params, InfoDict
-from networks import DoubleCritic, DeterministicActor
+from utils import Batch, InfoDict
 # Import composable actor updates
 from actor_updates import update_td3bc_actor
 
@@ -66,6 +60,7 @@ class TD3BCConfig(TD3Config):
     exploration_noise: float = 0.0  # No exploration in offline setting
     max_action: float = 1.0
     final_fc_init_scale: float = 1e-2
+    use_layer_norm: bool = True
     
 
     batch_size: int = 256
@@ -89,7 +84,7 @@ class RunTimeConfig():
     seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
-    eval_interval: int = 100000
+    eval_interval: int = 40_000
 
 
 
@@ -113,54 +108,9 @@ class Transition(NamedTuple):
     dones: jnp.ndarray
 
 
-def default_init(scale: Optional[float] = jnp.sqrt(2)):
-    return nn.initializers.orthogonal(scale)
 
 
-class MLP(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-    activate_final: bool = False
-    kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    layer_norm: bool = False
 
-    @nn.compact
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, hidden_dims in enumerate(self.hidden_dims):
-            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
-            if i + 1 < len(self.hidden_dims) or self.activate_final:
-                if self.layer_norm:  # Add layer norm after activation
-                    if i + 1 < len(self.hidden_dims):
-                        x = nn.LayerNorm()(x)
-                x = self.activations(x)
-        return x
-
-
-class DoubleCritic(nn.Module):
-    hidden_dims: Sequence[int]
-
-    @nn.compact
-    def __call__(
-        self, observation: jnp.ndarray, action: jnp.ndarray
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        x = jnp.concatenate([observation, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), layer_norm=True)(x)
-        q2 = MLP((*self.hidden_dims, 1), layer_norm=True)(x)
-        return q1, q2
-
-
-class TD3Actor(nn.Module):
-    hidden_dims: Sequence[int]
-    action_dim: int
-    max_action: float = 1.0  # In D4RL, action is scaled to [-1, 1]
-
-    @nn.compact
-    def __call__(self, observation: jnp.ndarray) -> jnp.ndarray:
-        action = MLP((*self.hidden_dims, self.action_dim))(observation)
-        action = self.max_action * jnp.tanh(
-            action
-        )  # scale to [-max_action, max_action]
-        return action
 
 
 def get_dataset(

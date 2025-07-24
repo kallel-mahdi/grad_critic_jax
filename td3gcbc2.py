@@ -75,79 +75,82 @@ class TD3GCBCConfig(TD3ConfigGC):
             object.__setattr__(self, "hidden_dims", tuple(self.hidden_dims))
 
 
+# --- Single TD3-GCBC Update Step ---
+@partial(jax.jit, static_argnums=(2))
+def _td3_gcbc_update_step(state: TD3StateGC, dataset: Transition, batch_size: int):
+    """Single TD3-GCBC update step (external JIT)."""
+    rng, key_critic, key_gamma = jax.random.split(state.rng, 3)
 
+    # Sample batch INSIDE JIT
+    rng, batch_rng = jax.random.split(state.rng, 2)
+    batch_idx = jax.random.randint(batch_rng, (batch_size,), 0, len(dataset.observations))
+    batch_transition = jax.tree_util.tree_map(lambda x: x[batch_idx], dataset)
 
-# --- Batch Update Function ---
-def update_n_times(
-    state: TD3StateGC, 
-    dataset: Transition,
-    config: TD3GCBCConfig,
-) -> Tuple[TD3StateGC, Dict]:
-    """Optimized version using Python conditionals like TD3BC."""
+    # 1. Update critic
+    new_critic, critic_info = update_critic(key_critic, state, batch_transition)
+    temp_state = state.replace(critic=new_critic)
+
+    # 2. Update gamma critic
+    new_gamma_critic, gamma_info = update_gamma_critic(key_gamma, temp_state, batch_transition)
+    temp_state = temp_state.replace(gamma_critic=new_gamma_critic)
+
+    # 3. Conditional target gamma update
+    def _update_target_gamma(state):
+        return target_update(state.gamma_critic.params, state.target_gamma_critic_params, state.config.tau)
     
-    critic_loss = actor_loss = gamma_loss = 0.0
-    
-    for step in range(config.n_jitted_updates):
-        # Sample batch (same as before)
-        rng, batch_rng = jax.random.split(state.rng, 2)
-        batch_idx = jax.random.randint(
-            batch_rng, (config.batch_size,), 0, len(dataset.observations)
+    def _no_update_target_gamma(state):
+        return state.target_gamma_critic_params
+
+    new_target_gamma_params = jax.lax.cond(
+        state.step % state.config.target_gamma_critic_update_period == 0,
+        _update_target_gamma,
+        _no_update_target_gamma,
+        temp_state
+    )
+
+    # 4. Conditional actor and target updates
+    def _update_actor_and_targets(state_for_actor_update):
+        new_actor, actor_info = update_td3gcbc_actor(state_for_actor_update, batch_transition)
+        
+        new_target_critic_params = target_update(
+            state_for_actor_update.critic.params, 
+            state_for_actor_update.target_critic_params, 
+            state_for_actor_update.config.tau
         )
-        batch_transition = jax.tree_util.tree_map(lambda x: x[batch_idx], dataset)
-        batch = Batch(
-            observations=batch_transition.observations,
-            actions=batch_transition.actions,
-            rewards=batch_transition.rewards,
-            next_observations=batch_transition.next_observations,
-            discounts=jnp.ones_like(batch_transition.rewards),
-            masks=1.0 - batch_transition.dones
+        new_target_actor_params = target_update(
+            new_actor.params, 
+            state_for_actor_update.target_actor_params, 
+            state_for_actor_update.config.tau
         )
         
-        rng, critic_rng, gamma_rng = jax.random.split(state.rng, 3)
-        
-        # 1. Update critic
-        new_critic, critic_info = update_critic(critic_rng, state, batch)
-        state = state.replace(critic=new_critic)
-        critic_loss = critic_info['critic_loss']
-        
-        # 2. Update gamma critic
-        new_gamma_critic, gamma_info = update_gamma_critic(gamma_rng, state, batch)
-        state = state.replace(gamma_critic=new_gamma_critic)
-        gamma_loss = gamma_info['gamma_loss']
-        
-        # 3. Conditional target gamma update
-        if step % config.target_gamma_critic_update_period == 0:
-            new_target_gamma_params = target_update(
-                new_gamma_critic.params, state.target_gamma_critic_params, config.tau
-            )
-            state = state.replace(target_gamma_critic_params=new_target_gamma_params)
-        
-        # 4. Conditional actor and target updates
-        if step % config.policy_delay == 0:
-            new_actor, actor_info = update_td3gcbc_actor(state, batch)
-            
-            new_target_critic_params = target_update(
-                new_critic.params, state.target_critic_params, config.tau
-            )
-            new_target_actor_params = target_update(
-                new_actor.params, state.target_actor_params, config.tau
-            )
-            
-            state = state.replace(
-                actor=new_actor,
-                target_critic_params=new_target_critic_params,
-                target_actor_params=new_target_actor_params
-            )
-            actor_loss = actor_info['actor_loss']
-    
-    # Update step counter and RNG
-    state = state.replace(rng=rng, step=state.step + config.n_jitted_updates)
-    
-    return state, {
-        "critic_loss": critic_loss,
-        "gamma_loss": gamma_loss,
-        "actor_loss": actor_loss,
-    }
+        return new_actor, new_target_actor_params, new_target_critic_params, actor_info
+
+    def _no_update_actor_and_targets(state_for_actor_update):
+        return (state_for_actor_update.actor, 
+                state_for_actor_update.target_actor_params, 
+                state_for_actor_update.target_critic_params, 
+                ACTOR_INFO_TEMPLATE)
+
+    new_actor, new_target_actor_params, new_target_critic_params, actor_info = jax.lax.cond(
+        state.step % state.config.policy_delay == 0,
+        _update_actor_and_targets,
+        _no_update_actor_and_targets,
+        temp_state
+    )
+
+    # Create final new state
+    new_state = state.replace(
+        actor=new_actor,
+        critic=new_critic,
+        gamma_critic=new_gamma_critic,
+        target_actor_params=new_target_actor_params,
+        target_critic_params=new_target_critic_params,
+        target_gamma_critic_params=new_target_gamma_params,
+        rng=rng,
+        step=state.step + 1
+    )
+
+    return new_state, {**critic_info, **gamma_info, **actor_info}
 
 
 # --- Factory Function ---
@@ -166,13 +169,13 @@ class TD3GCBC(object):
     """Wrapper class for TD3-GCBC implementation."""
     
     @classmethod
-    def update_n_times(
+    def update(
         cls,
         train_state: TD3StateGC,
-        data: Transition,
-        config: TD3GCBCConfig,
+        batch: Batch,
     ) -> Tuple[TD3StateGC, Dict]:
-        return update_n_times(train_state, data, config)
+        """Single TD3-GCBC update step."""
+        return _td3_gcbc_update_step(train_state, batch,config.batch_size)
 
     @classmethod 
     def get_action(
@@ -218,15 +221,31 @@ if __name__ == "__main__":
     
     # JIT functions
     algo = TD3GCBC()
-    update_fn = jax.jit(update_n_times, static_argnums=(2,))
+    update_fn = jax.jit(algo.update)  # Single update instead of update_n_times
     act_fn = jax.jit(algo.get_action)
 
-    # Training loop
-    num_steps = config.max_steps // config.n_jitted_updates
-    eval_interval = runtime_config.eval_interval // config.n_jitted_updates
+    # Training loop - now we handle the multiple updates here
+    total_updates = 0
+    max_updates = config.max_steps
+    eval_interval = runtime_config.eval_interval
     
-    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
-        train_state, update_info = update_fn(train_state, dataset, config)
+    for i in tqdm.tqdm(range(1, max_updates + 1), smoothing=0.1, dynamic_ncols=True):
+        # Sample batch for this update
+        rng, batch_rng = jax.random.split(train_state.rng, 2)
+        batch_idx = jax.random.randint(
+            batch_rng, (config.batch_size,), 0, len(dataset.observations)
+        )
+        batch_transition = jax.tree_util.tree_map(lambda x: x[batch_idx], dataset)
+        batch = Batch(
+            observations=batch_transition.observations,
+            actions=batch_transition.actions,
+            rewards=batch_transition.rewards,
+            next_observations=batch_transition.next_observations,
+            discounts=jnp.ones_like(batch_transition.rewards),
+            masks=1.0 - batch_transition.dones
+        )
+        
+        train_state, update_info = update_fn(train_state, batch)
         
         if i % runtime_config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}

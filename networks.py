@@ -5,8 +5,11 @@ import jax.numpy as jnp
 import distrax
 # --- Common Network Utilities ---
 
-# def default_init(scale: Optional[float] = jnp.sqrt(2)):
-#     return nn.initializers.orthogonal(scale)
+
+
+def default_init(scale: Optional[float] = jnp.sqrt(2)):
+    return nn.initializers.orthogonal(scale)
+
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
@@ -18,17 +21,19 @@ class MLP(nn.Module):
     def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
         for i, size in enumerate(self.hidden_dims):
             #x = nn.Dense(size, kernel_init=default_init())(x)
-            x = nn.Dense(size)(x)
+            x = nn.Dense(size,kernel_init=default_init())(x)
             
             if i + 1 < len(self.hidden_dims) or self.activate_final:
+                if self.use_layer_norm:
+                    x = nn.LayerNorm()(x)
+                
                 x = self.activations(x)
               
                 if self.dropout_rate is not None:
                     x = nn.Dropout(rate=self.dropout_rate)(
                         x, deterministic=not training)
                 
-                if self.use_layer_norm:
-                    x = nn.LayerNorm()(x)
+              
                     
         return x
     
@@ -49,6 +54,7 @@ class Critic(nn.Module):
         inputs = jnp.concatenate([observations, actions], -1)
         critic = MLP((*self.hidden_dims, 1),
                      use_layer_norm=self.use_layer_norm,
+                     activate_final=False,
                      activations=self.activations)(inputs)
         return jnp.squeeze(critic, -1)
 
@@ -85,19 +91,13 @@ class DeterministicActor(nn.Module):
                  observations: jnp.ndarray,
                  training: bool = False ):
         
-        # outputs = MLP(self.hidden_dims,
-        #         activations=nn.relu,
-        #         activate_final=True,
-        #         dropout_rate=self.dropout_rate)(observations,
-        #                                       training=training)
-        # action = nn.Dense(self.action_dim)(outputs) * self.max_action # Scale output to action range
-        x = MLP(self.hidden_dims,
+    
+        x = MLP((*self.hidden_dims,self.action_dim),
                 use_layer_norm=self.use_layer_norm,
                 activations=nn.relu,
-                activate_final=True,
+                activate_final=False,
                 dropout_rate=self.dropout_rate)(observations,
                                                training=training)
-        x = nn.Dense(self.action_dim)(x)
         action = nn.tanh(x)
         return action
 
